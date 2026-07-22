@@ -1,0 +1,57 @@
+# Model and dataset assets
+LLMs/
+dataset/
+datasets/
+data/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+
+# Generated experiment artifacts
+cache_data*/
+checkpoints*/
+logs/
+results/
+runs/
+wandb/
+outputs/
+predictions*.npz
+*.npy
+*.npz
+*.parquet
+
+# Archives and large media
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+
+# Credentials and local configuration
+.env
+.env.*
+*.pem
+*.key
+credentials*
+secrets*
+
+# Python and editor files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+.DS_Store
+
+# Internal project material
+docs_remote_recon/
+internal/
+private/
+*.bak*
+release_safety_report.json

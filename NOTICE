@@ -1,0 +1,10 @@
+PM-LLMoE public research release candidate
+
+This package contains the author-maintained PM-LLMoE model, training entry
+point, split/audit utilities, and an MCC5-THU adapter. It derives from the
+Apache-2.0-licensed Time-LLM codebase; see LICENSE.
+
+Pretrained language-model weights, datasets, trained checkpoints, cached
+features, experiment logs, raw predictions, manuscript sources, internal
+orchestration scripts, and third-party baseline implementations are not part
+of this package.
