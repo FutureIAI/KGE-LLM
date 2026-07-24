@@ -73,7 +73,7 @@ experiment-specific dimensions are configured at runtime.
 
 | Path | Purpose |
 |---|---|
-| `models/TimeLLM.py` | Canonical CT-LLMoE model and global-encoder controls |
+| `models/CTLLMoE.py` | Canonical CT-LLMoE model and global-encoder controls |
 | `models/moe_ffn.py` | Component-specific experts and routing variants |
 | `models/frozen_decoder_backbone.py` | Frozen decoder adapter |
 | `run_main.py` | Training, validation, testing, artifact export, and safe checkpoint loading |

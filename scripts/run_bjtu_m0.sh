@@ -14,7 +14,7 @@ TRAIN_EPOCHS="${TRAIN_EPOCHS:-15}"
 
 python -u run_main.py \
   --task_name classification --is_training 1 \
-  --model_id "CT_LLMoE_M0_seed${SEED}" --model TimeLLM \
+  --model_id "CT_LLMoE_M0_seed${SEED}" --model CTLLMoE \
   --model_comment "M0_seed${SEED}" --experiment_tag "M0_full" \
   --data phm --root_path "$DATA_ROOT" --phm_cache_dir "$CACHE_DIR" \
   --phm_split_metadata "$SPLIT_METADATA" --features M \

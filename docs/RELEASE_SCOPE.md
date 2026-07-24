@@ -7,7 +7,7 @@ principal architecture: component routing, local experts, global encoder
 selection, prompt/reprogramming controls, local-global prediction fusion,
 classification losses, metrics, split metadata, and safe checkpoint loading.
 
-The canonical implementation is `models/TimeLLM.py`. Historical duplicate
+The canonical implementation is `models/CTLLMoE.py`. Historical duplicate
 models are intentionally omitted so that the public API has one source of truth.
 
 ## Excluded Assets

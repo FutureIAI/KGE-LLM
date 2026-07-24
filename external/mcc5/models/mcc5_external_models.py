@@ -70,12 +70,12 @@ class CompactTransformerGlobal(nn.Module):
 
 
 class FrozenLlamaGlobal(nn.Module):
-    """Frozen pretrained LLaMA with full Time-LLM-style reprogramming."""
+    """Frozen pretrained LLaMA with the CT-LLMoE reprogramming interface."""
 
     def __init__(self, llama_path: str, active_layers: int = 8, dropout: float = 0.1):
         super().__init__()
         from transformers import LlamaConfig, LlamaModel, LlamaTokenizer
-        from models.TimeLLM import ReprogrammingLayer
+        from models.CTLLMoE import ReprogrammingLayer
 
         path = Path(llama_path)
         if not path.exists():

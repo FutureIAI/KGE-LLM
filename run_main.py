@@ -5,7 +5,7 @@ from torch import nn, optim
 from torch.optim import lr_scheduler
 from tqdm import tqdm
 
-from models import TimeLLM
+from models import CTLLMoE
 from data_provider.data_factory import data_provider
 
 import time
@@ -56,7 +56,7 @@ parser.add_argument('--task_name', type=str, required=True, default='long_term_f
 parser.add_argument('--is_training', type=int, required=True, default=1, help='status')
 parser.add_argument('--model_id', type=str, required=True, default='test', help='model id')
 parser.add_argument('--model_comment', type=str, required=True, default='none', help='prefix when saving test results')
-parser.add_argument('--model', type=str, required=True, choices=['TimeLLM'],
+parser.add_argument('--model', type=str, required=True, choices=['CTLLMoE'],
                     help='Released model entry point')
 parser.add_argument('--seed', type=int, default=2021, help='random seed')
 
@@ -135,7 +135,7 @@ parser.add_argument('--llm_final_norm', action=argparse.BooleanOptionalAction, d
                     help='Apply final decoder RMSNorm. Default is unchanged LLaMA behavior and enabled for Mistral.')
 parser.add_argument('--llm_attention_implementation', type=str, default='sdpa', choices=['eager', 'sdpa'],
                     help='Transformers attention implementation for the frozen decoder')
-parser.add_argument('--content', type=str, default='TimeLLM run', help='description for the model run')
+parser.add_argument('--content', type=str, default='CT-LLMoE run', help='description for the model run')
 parser.add_argument('--global_backbone_mode', type=str, default='llama',
                     choices=[
                         'llama', 'none',
@@ -1062,7 +1062,7 @@ for ii in range(args.itr):
     test_data, test_loader = data_provider(args, 'test')
 
     log.info("Building model...")
-    model = TimeLLM.Model(args).float()
+    model = CTLLMoE.Model(args).float()
 
     model.to(device)
     log.info(f"Model {args.model} initialized and moved to device.")

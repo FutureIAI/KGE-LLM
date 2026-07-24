@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from data_provider.data_loader import Dataset_PHM
-from models.TimeLLM import Model
+from models.CTLLMoE import Model
 
 
 COMPONENTS = {"motor": (0, 5), "gear": (5, 14), "LA": (14, 19), "RA": (19, 21)}
