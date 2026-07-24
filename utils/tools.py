@@ -868,7 +868,7 @@ def unified_test_classify(args, model, test_loader, criterion, accelerator):
             # 根据模型名称，决定是否对输入进行 permute
             if args.model in ['TimeMIL']: # 假设只有 TimeMIL 需要 [B, C, T]
                 batch_x = batch_x.permute(0, 2, 1)
-            # Sundial, Timer, and CT-LLMoE expect [B, T, C], so no permutation is needed.
+            # Sundial, Timer, and KG-LLMoE expect [B, T, C], so no permutation is needed.
             # ==========================================================
 
             # 使用 AMP (Automatic Mixed Precision)

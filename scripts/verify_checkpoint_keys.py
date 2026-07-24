@@ -9,7 +9,7 @@ import torch
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Audit a CT-LLMoE checkpoint without loading a model")
+    parser = argparse.ArgumentParser(description="Audit a KG-LLMoE checkpoint without loading a model")
     parser.add_argument("checkpoint")
     parser.add_argument("--output", default="")
     args = parser.parse_args()
