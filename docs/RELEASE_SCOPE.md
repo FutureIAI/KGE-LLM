@@ -23,7 +23,7 @@ The following categories must remain outside the public repository:
   experiment directories;
 - third-party baseline source trees and downloaded repositories;
 - unpublished research modules that are not required to execute the disclosed
-  PM-LLMoE method.
+  CT-LLMoE method.
 
 ## Third-Party Code
 

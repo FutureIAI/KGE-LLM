@@ -181,7 +181,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--experiment-tag", default="heldout_evaluation")
-    parser.add_argument("--variant", default="PM-LLMoE")
+    parser.add_argument("--variant", default="CT-LLMoE")
     parser.add_argument("--seen-conditions", default="1,2,3,4,5,6")
     parser.add_argument("--heldout-conditions", default="7,8,9")
     args = parser.parse_args()

@@ -4,7 +4,7 @@
 
 This directory is a whitelist-built release candidate, not a copy of the
 research workspace. It contains the minimum author-maintained implementation
-needed to inspect and execute the disclosed PM-LLMoE architecture and its main
+needed to inspect and execute the disclosed CT-LLMoE architecture and its main
 mechanism controls.
 
 ## Source Selection
@@ -14,7 +14,7 @@ mechanism controls.
 - Component routing and local experts are represented by one canonical module;
   older duplicate/prototype model files are excluded.
 - The MCC5 package contains only the author-maintained dataset/schema adapters,
-  measurement-location routing, PM-LLMoE model, and compact Transformer control.
+  measurement-location routing, CT-LLMoE model, and compact Transformer control.
 - Condition-temporal split construction, leakage audit, and held-out evaluation
   are included without machine-specific paths or experiment-stage names.
 

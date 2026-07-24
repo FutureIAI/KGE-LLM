@@ -49,7 +49,7 @@ log.addHandler(console_handler)
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 
-parser = argparse.ArgumentParser(description='PM-LLMoE industrial multilabel classification')
+parser = argparse.ArgumentParser(description='CT-LLMoE industrial multilabel classification')
 # basic config
 parser.add_argument('--task_name', type=str, required=True, default='long_term_forecast',
                     help='task name, options:[long_term_forecast, short_term_forecast, imputation, classification, anomaly_detection]')

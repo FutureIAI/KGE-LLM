@@ -1,7 +1,7 @@
 # MCC5-THU Adapter
 
 This package contains the author-maintained MCC5-THU data adapter, measurement-
-location routing layer, full PM-LLMoE model (`m0`), and compact trainable
+location routing layer, full CT-LLMoE model (`m0`), and compact trainable
 Transformer control (`m2`). The dataset, manifests, normalization statistics,
 pretrained decoder, and third-party baselines are not included.
 

@@ -1,1 +1,1 @@
-"""External-dataset adapters maintained by the PM-LLMoE authors."""
+"""External-dataset adapters maintained by the CT-LLMoE authors."""

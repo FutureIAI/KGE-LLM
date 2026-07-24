@@ -1,12 +1,12 @@
-# PM-LLMoE
+# CT-LLMoE
 
-**A Component-Topology-Guided Local-Global Framework with Contextual Sequence Encoders for Industrial Time-Series Fault Diagnosis**
+**Component-Topology-Guided Local-Global Mixture-of-Experts with Frozen LLM Encoders for Industrial Time-Series Fault Diagnosis**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.1%2B-EE4C2C.svg)](https://pytorch.org/)
 
-PM-LLMoE is a multichannel, multilabel fault-diagnosis framework designed to
+CT-LLMoE is a multichannel, multilabel fault-diagnosis framework designed to
 preserve component-attributed evidence while modeling temporal and
 cross-component context. It combines a deterministic sensor-component routing
 prior and component-specific local experts with a configurable global sequence
@@ -20,7 +20,7 @@ pretrained decoder files, trained checkpoints, cached arrays, predictions,
 logs, manuscript material, private experiment orchestration, and third-party
 baseline source trees.
 
-## Why PM-LLMoE?
+## Why CT-LLMoE?
 
 - **Component-attributed local evidence.** Known sensor-component
   correspondence routes each channel to a dedicated local expert instead of
@@ -51,9 +51,9 @@ path preserves the complete sequence and produces a shared contextual
 representation. Component-aligned logits from both paths are fused in the
 common multilabel space.
 
-![PM-LLMoE local-global architecture](docs/assets/fig1_pm_llmoe_architecture.png)
+![CT-LLMoE local-global architecture](docs/assets/fig1_ct_llmoe_architecture.png)
 
-**Figure 1.** PM-LLMoE overview: component-topology-guided local experts, a
+**Figure 1.** CT-LLMoE overview: component-topology-guided local experts, a
 parallel contextual sequence branch, and component-wise logit fusion.
 
 ### Patch, prompt, and backbone interface
@@ -64,7 +64,7 @@ uses prototype cross-attention; a direct linear projection is available as a
 controlled alternative. Optional prompt tokens are prepended before the frozen
 backbone, but only patch positions contribute to mean-patch readout.
 
-![PM-LLMoE patch and reprogramming pipeline](docs/assets/fig2_reprogramming_pipeline.png)
+![CT-LLMoE patch and reprogramming pipeline](docs/assets/fig2_reprogramming_pipeline.png)
 
 **Figure 2.** Generic patch-prompt-interface-backbone pipeline. Dataset- and
 experiment-specific dimensions are configured at runtime.
@@ -73,7 +73,7 @@ experiment-specific dimensions are configured at runtime.
 
 | Path | Purpose |
 |---|---|
-| `models/TimeLLM.py` | Canonical PM-LLMoE model and global-encoder controls |
+| `models/TimeLLM.py` | Canonical CT-LLMoE model and global-encoder controls |
 | `models/moe_ffn.py` | Component-specific experts and routing variants |
 | `models/frozen_decoder_backbone.py` | Frozen decoder adapter |
 | `run_main.py` | Training, validation, testing, artifact export, and safe checkpoint loading |
@@ -94,8 +94,8 @@ Python 3.10 or later is recommended. Install PyTorch for the CUDA version on
 your system, then install the remaining dependencies:
 
 ```bash
-conda create -n pm_llmoe python=3.10 -y
-conda activate pm_llmoe
+conda create -n ct_llmoe python=3.10 -y
+conda activate ct_llmoe
 
 # Install the appropriate PyTorch build first when required by your CUDA setup.
 python -m pip install -r requirements.txt
@@ -110,7 +110,7 @@ accept the corresponding licenses. Keep these assets outside Git. A typical
 local layout is:
 
 ```text
-PM-LLMoE/
+CT-LLMoE/
 ├── dataset/
 │   └── Training_new/        # BJTU-RAO CSV hierarchy; not tracked
 ├── LLMs/
@@ -178,7 +178,7 @@ readout, DFL-detach, mixed precision, and trainable-only checkpoints.
 export DATA_ROOT=./dataset/Training_new
 export SPLIT_METADATA=./cache_data/splits_condition_temporal/metadata.json
 export LLM_MODEL_PATH=./LLMs/llama-7b
-export CHECKPOINT_ROOT=./checkpoints/pm_llmoe_m0
+export CHECKPOINT_ROOT=./checkpoints/ct_llmoe_m0
 export SEED=2026
 
 bash scripts/run_bjtu_m0.sh
@@ -189,7 +189,7 @@ For a three-seed run, keep the split metadata and configuration fixed:
 ```bash
 for seed in 2026 2027 2028; do
   SEED="$seed" \
-  CHECKPOINT_ROOT="./checkpoints/pm_llmoe_m0_seed${seed}" \
+  CHECKPOINT_ROOT="./checkpoints/ct_llmoe_m0_seed${seed}" \
   bash scripts/run_bjtu_m0.sh
 done
 ```
@@ -236,7 +236,7 @@ python scripts/evaluate_heldout.py \
   --output-dir ./results/heldout/seed2026 \
   --batch-size 16 \
   --seed 2026 \
-  --variant PM-LLMoE
+  --variant CT-LLMoE
 ```
 
 ### 7. Verify checkpoint safety
@@ -306,6 +306,6 @@ research module is staged. The complete boundary is documented in
 
 ## License
 
-The public PM-LLMoE code is distributed under the Apache License 2.0. Datasets,
+The public CT-LLMoE code is distributed under the Apache License 2.0. Datasets,
 pretrained models, and third-party implementations remain subject to their own
 licenses and are not redistributed by this repository.

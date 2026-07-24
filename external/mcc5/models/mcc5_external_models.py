@@ -1,4 +1,4 @@
-"""PM-LLMoE and compact-Transformer models for MCC5-THU evaluation."""
+"""CT-LLMoE and compact-Transformer models for MCC5-THU evaluation."""
 from __future__ import annotations
 
 from pathlib import Path

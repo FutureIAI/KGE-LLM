@@ -26,7 +26,7 @@ esac
 
 python -u run_main.py \
   --task_name classification --is_training 1 \
-  --model_id "PM_LLMoE_${VARIANT}_seed${SEED}" --model TimeLLM \
+  --model_id "CT_LLMoE_${VARIANT}_seed${SEED}" --model TimeLLM \
   --model_comment "${VARIANT}_seed${SEED}" --experiment_tag "$VARIANT" \
   --data phm --root_path "$DATA_ROOT" --phm_cache_dir "$CACHE_DIR" \
   --phm_split_metadata "$SPLIT_METADATA" --features M \
