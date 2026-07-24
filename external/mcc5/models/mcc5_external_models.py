@@ -1,4 +1,4 @@
-"""CT-LLMoE and compact-Transformer models for MCC5-THU evaluation."""
+"""KG-LLMoE and compact-Transformer models for MCC5-THU evaluation."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -70,12 +70,12 @@ class CompactTransformerGlobal(nn.Module):
 
 
 class FrozenLlamaGlobal(nn.Module):
-    """Frozen pretrained LLaMA with the CT-LLMoE reprogramming interface."""
+    """Frozen pretrained LLaMA with the KG-LLMoE reprogramming interface."""
 
     def __init__(self, llama_path: str, active_layers: int = 8, dropout: float = 0.1):
         super().__init__()
         from transformers import LlamaConfig, LlamaModel, LlamaTokenizer
-        from models.CTLLMoE import ReprogrammingLayer
+        from models.KGLLMoE import ReprogrammingLayer
 
         path = Path(llama_path)
         if not path.exists():

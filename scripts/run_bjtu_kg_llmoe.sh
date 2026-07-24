@@ -8,14 +8,14 @@ DATA_ROOT="${DATA_ROOT:-./dataset/Training_new}"
 SPLIT_METADATA="${SPLIT_METADATA:?Set SPLIT_METADATA to audited condition-temporal metadata}"
 LLM_MODEL_PATH="${LLM_MODEL_PATH:?Set LLM_MODEL_PATH to a local LLaMA directory}"
 CACHE_DIR="${CACHE_DIR:-./cache_data}"
-CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-./checkpoints/ct_llmoe_m0}"
+CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-./checkpoints/kg_llmoe}"
 SEED="${SEED:-2026}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-15}"
 
 python -u run_main.py \
   --task_name classification --is_training 1 \
-  --model_id "CT_LLMoE_M0_seed${SEED}" --model CTLLMoE \
-  --model_comment "M0_seed${SEED}" --experiment_tag "M0_full" \
+  --model_id "KG_LLMoE_seed${SEED}" --model KGLLMoE \
+  --model_comment "KG_LLMoE_seed${SEED}" --experiment_tag "KG_LLMoE_full" \
   --data phm --root_path "$DATA_ROOT" --phm_cache_dir "$CACHE_DIR" \
   --phm_split_metadata "$SPLIT_METADATA" --features M \
   --seq_len 512 --label_len 0 --pred_len 0 \

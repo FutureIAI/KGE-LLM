@@ -15,7 +15,7 @@ TRAIN_EPOCHS="${TRAIN_EPOCHS:-5}"
 
 case "$VARIANT" in
   M0_full)                BACKBONE=llama; PROMPT=full; REPROGRAMMING=full ;;
-  M1_pm_moe_only)         BACKBONE=none; PROMPT=none; REPROGRAMMING=linear ;;
+  M1_kg_moe_only)         BACKBONE=none; PROMPT=none; REPROGRAMMING=linear ;;
   M2_lite_trainable)      BACKBONE=transformer_trainable_lite; PROMPT=none; REPROGRAMMING=linear ;;
   M3_lite_frozen)         BACKBONE=transformer_frozen_lite; PROMPT=none; REPROGRAMMING=linear ;;
   M4_random_llama_shape)  BACKBONE=llama_random_frozen; PROMPT=full; REPROGRAMMING=full ;;
@@ -26,7 +26,7 @@ esac
 
 python -u run_main.py \
   --task_name classification --is_training 1 \
-  --model_id "CT_LLMoE_${VARIANT}_seed${SEED}" --model CTLLMoE \
+  --model_id "KG_LLMoE_${VARIANT}_seed${SEED}" --model KGLLMoE \
   --model_comment "${VARIANT}_seed${SEED}" --experiment_tag "$VARIANT" \
   --data phm --root_path "$DATA_ROOT" --phm_cache_dir "$CACHE_DIR" \
   --phm_split_metadata "$SPLIT_METADATA" --features M \

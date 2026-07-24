@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from data_provider.data_loader import Dataset_PHM
-from models.CTLLMoE import Model
+from models.KGLLMoE import Model
 
 
 COMPONENTS = {"motor": (0, 5), "gear": (5, 14), "LA": (14, 19), "RA": (19, 21)}
@@ -181,7 +181,7 @@ def main():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--experiment-tag", default="heldout_evaluation")
-    parser.add_argument("--variant", default="CT-LLMoE")
+    parser.add_argument("--variant", default="KG-LLMoE")
     parser.add_argument("--seen-conditions", default="1,2,3,4,5,6")
     parser.add_argument("--heldout-conditions", default="7,8,9")
     args = parser.parse_args()
