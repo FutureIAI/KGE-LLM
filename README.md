@@ -25,9 +25,9 @@ baseline source trees.
 - **Component-attributed local evidence.** Known sensor-component
   correspondence routes each channel to a dedicated local expert instead of
   learning an unconstrained expert assignment from labels alone.
-- **Local-global modeling.** The local branch extracts component-specific
-  envelope, spectral, and learnable wavelet descriptors, while the global
-  branch encodes the complete multichannel sequence as temporal patches.
+- **Local-global modeling.** The local branch combines analytic-envelope
+  descriptors with RMS-pooled responses from learnable temporal filters. The
+  global branch encodes the complete multichannel sequence as temporal patches.
 - **Configurable global encoder.** The same interface supports frozen
   pretrained decoders, compact trainable Transformers, and frozen-random
   controls, making mechanism comparisons reproducible without changing the
@@ -38,8 +38,8 @@ baseline source trees.
 - **Leakage-aware evaluation.** Source-aware, condition-temporal metadata keeps
   held-out operating conditions outside optimization, normalization fitting,
   class weighting, early stopping, and threshold calibration.
-- **Checkpoint safety.** Trainable-only checkpointing is enabled by default and
-  rejects any save that contains registered frozen decoder weights.
+- **Checkpoint safety.** Task-trained parameters and fixed local-descriptor
+  statistics are saved by default; registered frozen decoder weights are excluded.
 
 ## Architecture
 
@@ -75,6 +75,7 @@ experiment-specific dimensions are configured at runtime.
 |---|---|
 | `models/KGLLMoE.py` | Canonical KG-LLMoE model and global-encoder controls |
 | `models/moe_ffn.py` | Component-specific experts and routing variants |
+| `models/revised_local.py` | Analytic-envelope and RMS local descriptors |
 | `models/frozen_decoder_backbone.py` | Frozen decoder adapter |
 | `run_main.py` | Training, validation, testing, artifact export, and safe checkpoint loading |
 | `data_provider/` | PHM dataset loading and split-metadata integration |
@@ -170,9 +171,12 @@ Do not continue to training unless the audit completes successfully.
 
 ### 4. Train the canonical BJTU model
 
-The canonical script uses a 512-point input, 1,024-sample data-window stride,
-128-point patches, patch stride 8, eight active decoder blocks, mean-patch
-readout, DFL-detach, mixed precision, and trainable-only checkpoints.
+The BJTU script fits local-descriptor statistics on the complete training
+partition, trains the local experts for five epochs, selects their warm-up state
+on seen validation, and then starts joint training with a fresh optimizer.
+The local mode is `revised_rms`; the older signed-mean mode remains available
+for historical controls. Checkpoints include the fixed descriptor mean and
+standard-deviation buffers but exclude frozen decoder weights.
 
 ```bash
 export DATA_ROOT=./dataset/Training_new
@@ -184,15 +188,21 @@ export SEED=2026
 bash scripts/run_bjtu_kg_llmoe.sh
 ```
 
-For a three-seed run, keep the split metadata and configuration fixed:
+For repeated runs, keep the split metadata and configuration fixed and provide
+the intended seed list explicitly:
 
 ```bash
-for seed in 2026 2027 2028; do
+: "${SEEDS:?Set SEEDS to the space-separated run seeds}"
+for seed in $SEEDS; do
   SEED="$seed" \
   CHECKPOINT_ROOT="./checkpoints/kg_llmoe_seed${seed}" \
   bash scripts/run_bjtu_kg_llmoe.sh
 done
 ```
+
+This is a unified implementation of the revised method. Historical archived
+runs used different local warm-up sample budgets, so this script is not an
+exact replay of every previously reported checkpoint.
 
 ### 5. Run mechanism controls
 

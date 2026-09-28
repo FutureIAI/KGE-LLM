@@ -44,10 +44,14 @@ def load_model(checkpoint_path, config_path, device):
     state = checkpoint.get("model_state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
     incompatible = model.load_state_dict(state, strict=False)
     trainable = {name for name, param in model.named_parameters() if param.requires_grad}
-    missing_trainable = sorted(trainable - set(state))
+    local_statistics = {
+        name for name, _ in model.named_buffers()
+        if name.startswith("moe_ffn.mean_") or name.startswith("moe_ffn.std_")
+    }
+    missing_trainable = sorted((trainable | local_statistics) - set(state))
     llm_keys = sorted(key for key in state if str(key).startswith("llm_model."))
     if missing_trainable:
-        raise RuntimeError(f"Missing trainable checkpoint keys: {missing_trainable[:20]}")
+        raise RuntimeError(f"Missing task-state checkpoint keys: {missing_trainable[:20]}")
     if llm_keys:
         raise RuntimeError(f"Unsafe checkpoint contains llm_model keys: {llm_keys[:5]}")
     model.to(device).eval()

@@ -14,6 +14,7 @@ from layers.StandardNorm import Normalize
 import os
 
 from models.moe_ffn import LlamaMoEFeedForward
+from models.revised_local import RevisedRmsMoE
 from models.frozen_decoder_backbone import FrozenDecoderBackboneAdapter, FrozenDecoderBackboneSpec
 
 transformers.logging.set_verbosity_error()
@@ -338,6 +339,11 @@ This dataset consists of multi-channel time series data collected from a tractio
             expert_head_permutation=self.expert_head_permutation,
             unified_hidden=getattr(configs, "unified_expert_hidden", None),
         )
+        local_mode = getattr(configs, "local_descriptor_mode", "legacy")
+        if local_mode == "revised_rms":
+            self.moe_ffn = RevisedRmsMoE(self.moe_ffn)
+        elif local_mode != "legacy":
+            raise ValueError(f"Unknown local_descriptor_mode={local_mode}")
         self.moe_alpha = configs.moe_alpha
         # ---- Component-specific heads ----
         self.component_names = ["motor", "gear", "LA", "RA"]

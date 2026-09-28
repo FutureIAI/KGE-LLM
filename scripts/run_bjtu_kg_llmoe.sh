@@ -28,7 +28,8 @@ python -u run_main.py \
   --learning_rate 0.0001 --train_epochs "$TRAIN_EPOCHS" --patience 3 --itr 1 \
   --loss_type dfl_detach --dfl_gamma_base 1 --dfl_gamma_scale 2 \
   --global_backbone_mode llama --prompt_mode full --reprogramming_mode full \
-  --routing_variant correct --readout_mode mean_patch --moe_alpha 0.2 --lradj COS \
+  --routing_variant correct --local_descriptor_mode revised_rms \
+  --local_warmup_epochs 5 --readout_mode mean_patch --moe_alpha 0.2 --lradj COS \
   --use_amp --save_trainable_only --eval_metrics_extended --save_predictions \
   --save_branch_logits --save_sample_metadata \
   --checkpoints "$CHECKPOINT_ROOT" --seed "$SEED"

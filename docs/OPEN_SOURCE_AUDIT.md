@@ -11,8 +11,8 @@ mechanism controls.
 
 - The canonical BJTU model and training entry point were selected from the
   verified LLaMA/Mistral implementation.
-- Component routing and local experts are represented by one canonical module;
-  older duplicate/prototype model files are excluded.
+- Component routing and legacy controls remain in `models/moe_ffn.py`; the
+  revised analytic-envelope/RMS local pathway is in `models/revised_local.py`.
 - The MCC5 package contains only the author-maintained dataset/schema adapters,
   measurement-location routing, KG-LLMoE model, and compact Transformer control.
 - Condition-temporal split construction, leakage audit, and held-out evaluation
@@ -27,7 +27,8 @@ and unpublished modules outside the disclosed method are also excluded.
 
 ## Checkpoint Boundary
 
-`run_main.py` enables trainable-only checkpointing by default. If a model has
+`run_main.py` enables task-state checkpointing by default. It saves trainable
+parameters and, in revised-local mode, fixed descriptor-statistic buffers. If a model has
 registered `llm_model.*` parameters, requesting a full state-dictionary save
 raises an error. Trainable-only saves emit `checkpoint_key_report.json` and fail
 if an `llm_model.*` key is present. `scripts/verify_checkpoint_keys.py` provides
@@ -35,13 +36,13 @@ an independent checkpoint audit before publication.
 
 ## Validation Record
 
-Validation was performed without training or loading pretrained weights:
+Validation was performed without dataset training or loading pretrained weights:
 
 - release safety scan: PASS;
-- Python AST parsing: 30 files parsed;
-- `run_main.py --help`: PASS;
-- held-out evaluator and split/audit CLI imports: PASS;
-- MCC5 model tests: 2 passed;
+- Python syntax checks for changed entry points: PASS;
+- `run_main.py --help` in the remote environment: PASS;
+- revised-local CPU tests: 4 passed, including full-model interface and
+  checkpoint round trip;
 - ignore-rule probes for LLMs, datasets, checkpoints, caches, logs, results,
   and `.env`: all matched the intended rules.
 

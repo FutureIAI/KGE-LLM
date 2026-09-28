@@ -3,10 +3,12 @@ import torch
 from accelerate import Accelerator
 from torch import nn, optim
 from torch.optim import lr_scheduler
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from models import KGLLMoE
 from data_provider.data_factory import data_provider
+from utils.local_warmup import fit_local_descriptors, warm_up_local
 
 import time
 import random
@@ -229,6 +231,10 @@ parser.add_argument('--unified_expert', action='store_true', default=False,
                     help='Alias that selects routing_variant=unified')
 parser.add_argument('--unified_expert_hidden', type=int, default=None,
                     help='Parameter-count-derived unified expert hidden width')
+parser.add_argument('--local_descriptor_mode', choices=['legacy', 'revised_rms'], default='legacy',
+                    help='Use analytic envelopes, RMS filter pooling, and fixed descriptor statistics')
+parser.add_argument('--local_warmup_epochs', type=int, default=0,
+                    help='Full-training-split local warm-up epochs before joint optimization')
 parser.add_argument('--routing_prompt_mode', type=str, default='default',
                     choices=['default', 'raw_stats_only'],
                     help='Prompt policy for routing comparisons')
@@ -293,7 +299,7 @@ def build_experiment_metadata(args):
         "batch_size", "learning_rate", "train_epochs", "patience", "lradj", "loss_type",
         "focal_gamma", "cb_beta", "moe_alpha", "global_backbone_mode", "prompt_mode",
         "reprogramming_mode", "readout_mode", "routing_variant", "routing_manifest",
-        "expert_head_permutation",
+        "expert_head_permutation", "local_descriptor_mode", "local_warmup_epochs",
     ]
     evaluation_keys = [
         "phm_split_metadata", "eval_batch_size", "eval_metrics_extended",
@@ -323,16 +329,26 @@ def get_trainable_param_names(model):
     return {name for name, param in model.named_parameters() if param.requires_grad}
 
 
+def get_required_state_names(model):
+    names = get_trainable_param_names(model)
+    names.update(
+        name for name, _ in model.named_buffers()
+        if name.startswith('moe_ffn.mean_') or name.startswith('moe_ffn.std_')
+    )
+    return names
+
+
 def trainable_state_dict(model):
+    required = get_required_state_names(model)
     return {
-        name: param.detach().cpu()
-        for name, param in model.named_parameters()
-        if param.requires_grad
+        name: value.detach().cpu()
+        for name, value in model.state_dict().items()
+        if name in required
     }
 
 
 def build_checkpoint_key_report(model, state_dict=None):
-    trainable_names = get_trainable_param_names(model)
+    trainable_names = get_required_state_names(model)
     if state_dict is None:
         state_keys = set(model.state_dict().keys())
     else:
@@ -1106,6 +1122,38 @@ for ii in range(args.itr):
         })
         print(f"FINETUNE_SOURCE_LOADED {finetune_checkpoint}")
 
+    if args.task_name == 'classification' and args.data == 'phm':
+        criterion = build_dynamic_focal_criteria(train_data, args, path)
+    else:
+        criterion = DynamicFocalLoss(alpha=1.0, gamma_base=1.0, gamma_scale=2.0)
+
+    if args.local_descriptor_mode == 'revised_rms' and args.is_training:
+        if args.local_warmup_epochs != 5 and not finetune_checkpoint:
+            raise ValueError('Unified revised-local training requires five warm-up epochs')
+        if args.debug or args.phm_balanced_subset_metadata:
+            raise ValueError('Revised-local warm-up requires the full training partition')
+        if not args.phm_split_metadata:
+            raise ValueError('Revised-local warm-up requires explicit split metadata')
+        if not finetune_checkpoint:
+            local_train_loader = DataLoader(
+                train_data, batch_size=args.batch_size, shuffle=True,
+                num_workers=args.num_workers, drop_last=False,
+            )
+            local_val_loader = DataLoader(
+                vali_data, batch_size=args.eval_batch_size, shuffle=False,
+                num_workers=args.num_workers, drop_last=False,
+            )
+            fit_local_descriptors(model, local_train_loader, device)
+            report = warm_up_local(
+                model, local_train_loader, local_val_loader,
+                _select_train_criterion(criterion, 'full'), device,
+                args.local_warmup_epochs, args.learning_rate,
+                os.path.join(path, 'local_warmup.pt'),
+            )
+            write_json(os.path.join(path, 'local_warmup.json'), report)
+    elif args.local_warmup_epochs:
+        raise ValueError('--local_warmup_epochs requires revised_rms training')
+
     if args.task_name == "classification" and args.data == "phm":
         run_head_alignment_check(path, model, train_loader, args, device)
         write_readout_report(path, model)
@@ -1155,10 +1203,6 @@ for ii in range(args.itr):
 
 
     #criterion = FocalLoss(alpha=1.0,gamma=1.7)
-    if args.task_name == "classification" and args.data == "phm":
-        criterion = build_dynamic_focal_criteria(train_data, args, path)
-    else:
-        criterion = DynamicFocalLoss(alpha=1.0, gamma_base=1.0, gamma_scale=2.0)
     if args.use_amp:
         scaler = torch.cuda.amp.GradScaler()
 
