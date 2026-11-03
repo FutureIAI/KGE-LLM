@@ -1,18 +1,21 @@
-# KG-LLMoE
+# KGE-LLM
 
-**Knowledge-Guided Mixture-of-Experts with Large Language Models for Industrial Time-Series Fault Diagnosis**
+**Knowledge-Guided Local Experts with Large Language Models for Industrial Time-Series Fault Diagnosis**
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.1%2B-EE4C2C.svg)](https://pytorch.org/)
 
-KG-LLMoE is a multichannel, multilabel fault-diagnosis framework designed to
+KGE-LLM is a multichannel, multilabel fault-diagnosis framework designed to
 preserve component-attributed evidence while modeling temporal and
 cross-component context. It combines a deterministic sensor-component routing
 prior and component-specific local experts with a configurable global sequence
 encoder. The public implementation supports frozen pretrained LLaMA and Mistral
 backbones, compact trainable or frozen Transformers, prompt controls,
 reprogramming controls, and routing ablations through one entry point.
+Sensor assignments are predefined, and all local experts operate without a
+learned expert-selection gate. Component-aligned local and global logits are
+combined using a fixed scalar weight.
 
 This repository contains the public research core required to inspect, train,
 evaluate, and audit the disclosed method. It intentionally excludes datasets,
@@ -20,7 +23,7 @@ pretrained decoder files, trained checkpoints, cached arrays, predictions,
 logs, manuscript material, private experiment orchestration, and third-party
 baseline source trees.
 
-## Why KG-LLMoE?
+## Why KGE-LLM?
 
 - **Component-attributed local evidence.** Known sensor-component
   correspondence routes each channel to a dedicated local expert instead of
@@ -51,9 +54,9 @@ path preserves the complete sequence and produces a shared contextual
 representation. Component-aligned logits from both paths are fused in the
 common multilabel space.
 
-![KG-LLMoE local-global architecture](docs/assets/fig1_kg_llmoe_architecture.png)
+![KGE-LLM local-global architecture](docs/assets/fig1_kg_llmoe_architecture.png)
 
-**Figure 1.** KG-LLMoE overview: component-topology-guided local experts, a
+**Figure 1.** KGE-LLM overview: component-topology-guided local experts, a
 parallel contextual sequence branch, and component-wise logit fusion.
 
 ### Patch, prompt, and backbone interface
@@ -64,16 +67,20 @@ uses prototype cross-attention; a direct linear projection is available as a
 controlled alternative. Optional prompt tokens are prepended before the frozen
 backbone, but only patch positions contribute to mean-patch readout.
 
-![KG-LLMoE patch and reprogramming pipeline](docs/assets/fig2_reprogramming_pipeline.png)
+![KGE-LLM patch and reprogramming pipeline](docs/assets/fig2_reprogramming_pipeline.png)
 
 **Figure 2.** Generic patch-prompt-interface-backbone pipeline. Dataset- and
 experiment-specific dimensions are configured at runtime.
 
 ## Repository Contents
 
+The paper and repository use the name KGE-LLM. Existing source filenames,
+script names, and command-line identifiers are retained for compatibility;
+use the reproduction commands below as written.
+
 | Path | Purpose |
 |---|---|
-| `models/KGLLMoE.py` | Canonical KG-LLMoE model and global-encoder controls |
+| `models/KGLLMoE.py` | Canonical KGE-LLM model and global-encoder controls |
 | `models/moe_ffn.py` | Component-specific experts and routing variants |
 | `models/revised_local.py` | Analytic-envelope and RMS local descriptors |
 | `models/frozen_decoder_backbone.py` | Frozen decoder adapter |
@@ -95,8 +102,8 @@ Python 3.10 or later is recommended. Install PyTorch for the CUDA version on
 your system, then install the remaining dependencies:
 
 ```bash
-conda create -n kg_llmoe python=3.10 -y
-conda activate kg_llmoe
+conda create -n kge_llm python=3.10 -y
+conda activate kge_llm
 
 # Install the appropriate PyTorch build first when required by your CUDA setup.
 python -m pip install -r requirements.txt
@@ -111,7 +118,7 @@ accept the corresponding licenses. Keep these assets outside Git. A typical
 local layout is:
 
 ```text
-KG-LLMoE/
+KGE-LLM/
 ├── dataset/
 │   └── Training_new/        # BJTU-RAO CSV hierarchy; not tracked
 ├── LLMs/
@@ -316,6 +323,6 @@ research module is staged. The complete boundary is documented in
 
 ## License
 
-The public KG-LLMoE code is distributed under the Apache License 2.0. Datasets,
+The public KGE-LLM code is distributed under the Apache License 2.0. Datasets,
 pretrained models, and third-party implementations remain subject to their own
 licenses and are not redistributed by this repository.
