@@ -23,10 +23,10 @@ def data_provider(args, flag):
     timeenc = 0 if args.embed != 'timeF' else 1
     percent = args.percent
 
-    if flag == 'test':
+    if flag in {'val', 'test', 'heldout'}:
         shuffle_flag = False
-        drop_last = True
-        batch_size = args.batch_size
+        drop_last = False
+        batch_size = getattr(args, 'eval_batch_size', args.batch_size)
         freq = args.freq
     else:
         shuffle_flag = True

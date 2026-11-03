@@ -1,4 +1,5 @@
 import argparse
+from contextlib import nullcontext
 import torch
 from accelerate import Accelerator
 from torch import nn, optim
@@ -9,6 +10,8 @@ from tqdm import tqdm
 from models import KGLLMoE
 from data_provider.data_factory import data_provider
 from utils.local_warmup import fit_local_descriptors, warm_up_local
+from utils.training import classification_losses, optimizer_step, validate_max_grad_norm
+from utils.numerics import validate_logit_clip
 
 import time
 import random
@@ -29,7 +32,6 @@ from utils.losses import (
     AsymmetricLoss,
 )
 from utils.tools import (
-    del_files,
     EarlyStopping,
     adjust_learning_rate,
     vali_classify,
@@ -41,7 +43,7 @@ from utils.tools import (
     plot_convergence_curves,
 )
 
-# 初始化日志系统
+
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -51,7 +53,7 @@ log.addHandler(console_handler)
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:64"
 
-parser = argparse.ArgumentParser(description='KG-LLMoE industrial multilabel classification')
+parser = argparse.ArgumentParser(description='KGE-LLM industrial multilabel classification')
 # basic config
 parser.add_argument('--task_name', type=str, required=True, default='long_term_forecast',
                     help='task name, options:[long_term_forecast, short_term_forecast, imputation, classification, anomaly_detection]')
@@ -86,16 +88,11 @@ parser.add_argument('--phm_balanced_subset_metadata', type=str, default='',
 parser.add_argument('--allow_legacy_phm_split', action='store_true', default=False,
                     help='Allow legacy phm_split_*.pt loading. Disabled by default to prevent split/cache mismatch.')
 
-# # forecasting task
-# parser.add_argument('--seq_len', type=int, default=96, help='input sequence length')
-# parser.add_argument('--label_len', type=int, default=48, help='start token length')
-# parser.add_argument('--pred_len', type=int, default=96, help='prediction sequence length')
-# parser.add_argument('--seasonal_patterns', type=str, default='Monthly', help='subset for M4')
 # classification task
-parser.add_argument('--num_classes', type=int, default=21)  # 类别数量，建议根据你的文件夹来设定
+parser.add_argument('--num_classes', type=int, default=21)
 parser.add_argument('--seq_len', type=int, default=1024)
 parser.add_argument('--label_len', type=int, default=0)
-parser.add_argument('--pred_len', type=int, default=0)  # 分类不需要预测长度
+parser.add_argument('--pred_len', type=int, default=0)
 parser.add_argument('--debug', action='store_true', help='Enable debug mode to limit number of iters per epoch')
 parser.add_argument('--debug_iters', type=int, default=1000, help='Maximum iters per epoch in debug mode')
 
@@ -173,7 +170,13 @@ parser.add_argument('--train_epochs', type=int, default=10, help='train epochs')
 parser.add_argument('--align_epochs', type=int, default=10, help='alignment epochs')
 parser.add_argument('--batch_size', type=int, default=32, help='batch size of train input data')
 parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
-                    help='Micro-batch accumulation used only to preserve effective batch size after OOM fallback')
+                    help='Number of micro-batches per optimizer update')
+parser.add_argument('--max_grad_norm', type=float, default=0.0,
+                    help='Gradient norm clipping limit; 0 disables clipping')
+parser.add_argument('--logit_clip', type=float, default=0.0,
+                    help='Local-output logit clipping limit; 0 disables clipping')
+parser.add_argument('--loss_logit_clip', type=float, default=0.0,
+                    help='Loss-input logit clipping limit; 0 disables clipping')
 parser.add_argument('--eval_batch_size', type=int, default=8, help='batch size of model evaluation')
 parser.add_argument('--patience', type=int, default=10, help='early stopping patience')
 parser.add_argument('--learning_rate', type=float, default=0.0001, help='optimizer learning rate')
@@ -249,6 +252,11 @@ parser.add_argument('--percent', type=int, default=100)
 parser.add_argument('--moe_loss_weight', type=float, default=0.01)
 parser.add_argument('--moe_alpha', type=float, default=0.01)
 args = parser.parse_args()
+args.max_grad_norm = validate_max_grad_norm(args.max_grad_norm)
+args.logit_clip = validate_logit_clip(args.logit_clip)
+args.loss_logit_clip = validate_logit_clip(args.loss_logit_clip)
+if not args.is_training:
+    parser.error('Use scripts/evaluate_heldout.py for checkpoint evaluation')
 if args.llm_readout:
     args.readout_mode = args.llm_readout
 if args.unified_expert:
@@ -299,7 +307,8 @@ def build_experiment_metadata(args):
         "batch_size", "learning_rate", "train_epochs", "patience", "lradj", "loss_type",
         "focal_gamma", "cb_beta", "moe_alpha", "global_backbone_mode", "prompt_mode",
         "reprogramming_mode", "readout_mode", "routing_variant", "routing_manifest",
-        "expert_head_permutation", "local_descriptor_mode", "local_warmup_epochs",
+        "expert_head_permutation", "local_descriptor_mode", "local_warmup_epochs", "max_grad_norm",
+        "logit_clip", "loss_logit_clip",
     ]
     evaluation_keys = [
         "phm_split_metadata", "eval_batch_size", "eval_metrics_extended",
@@ -671,6 +680,7 @@ def build_dynamic_focal_criteria(train_data, args, path):
     cb_weight_tensor = torch.tensor(cb_weights, dtype=torch.float32)
 
     loss_type = getattr(args, "loss_type", "dfl_detach")
+    loss_logit_clip = args.loss_logit_clip
     dfl_detach = bool(getattr(args, "dfl_detach_gamma", False) or loss_type == "dfl_detach")
     if loss_type == "dfl_full":
         dfl_detach = False
@@ -686,6 +696,9 @@ def build_dynamic_focal_criteria(train_data, args, path):
         "enabled": True,
         "source": "train_split_label_frequency_only",
         "loss_type": loss_type,
+        "max_grad_norm": args.max_grad_norm,
+        "logit_clip": args.logit_clip,
+        "loss_logit_clip": loss_logit_clip,
         "num_windows": int(total_windows),
         "num_classes": int(args.num_classes),
         "positive_counts": counts.astype(int).tolist(),
@@ -732,14 +745,14 @@ def build_dynamic_focal_criteria(train_data, args, path):
     cb_by_scope = _component_tensor_dict(cb_weight_tensor)
 
     if loss_type == "bce":
-        criteria = _criteria_from_factory(lambda _: PlainBCEWithLogitsLoss())
+        criteria = _criteria_from_factory(lambda _: PlainBCEWithLogitsLoss(logit_clip=loss_logit_clip))
     elif loss_type == "weighted_bce":
-        criteria = _criteria_from_factory(lambda t: PlainBCEWithLogitsLoss(pos_weight=t), pos_weight_by_scope)
+        criteria = _criteria_from_factory(lambda t: PlainBCEWithLogitsLoss(pos_weight=t, logit_clip=loss_logit_clip), pos_weight_by_scope)
     elif loss_type == "focal":
-        criteria = _criteria_from_factory(lambda _: FocalLoss(alpha=1.0, gamma=float(getattr(args, "focal_gamma", 2.0))))
+        criteria = _criteria_from_factory(lambda _: FocalLoss(alpha=1.0, gamma=float(getattr(args, "focal_gamma", 2.0)), logit_clip=loss_logit_clip))
     elif loss_type == "cb_focal":
         criteria = _criteria_from_factory(
-            lambda t: ClassBalancedFocalLoss(alpha=t, gamma=float(getattr(args, "focal_gamma", 2.0))),
+            lambda t: ClassBalancedFocalLoss(alpha=t, gamma=float(getattr(args, "focal_gamma", 2.0)), logit_clip=loss_logit_clip),
             cb_by_scope,
         )
     elif loss_type == "asl":
@@ -748,6 +761,7 @@ def build_dynamic_focal_criteria(train_data, args, path):
                 gamma_pos=float(getattr(args, "asl_gamma_pos", 0.0)),
                 gamma_neg=float(getattr(args, "asl_gamma_neg", 4.0)),
                 clip=float(getattr(args, "asl_clip", 0.05)),
+                logit_clip=loss_logit_clip,
             )
         )
     elif loss_type in {"dfl_detach", "dfl_full", "dfl_static_low", "dfl_static_high"}:
@@ -757,6 +771,7 @@ def build_dynamic_focal_criteria(train_data, args, path):
                 gamma_base=gamma_base,
                 gamma_scale=gamma_scale,
                 detach_gamma=dfl_detach,
+                logit_clip=loss_logit_clip,
             ),
             alpha_by_scope,
         )
@@ -790,12 +805,15 @@ def run_head_alignment_check(path, model, train_loader, args, device):
             write_json(os.path.join(path, "head_alignment_report.json"), report)
             raise RuntimeError(report["error"])
 
-    head_dims = [
-        getattr(model_to_check, "motor_head").out_features,
-        getattr(model_to_check, "gear_head").out_features,
-        getattr(model_to_check, "LA_head").out_features,
-        getattr(model_to_check, "RA_head").out_features,
-    ]
+    if getattr(model_to_check, "local_only", False):
+        head_dims = list(model_to_check.moe_ffn.label_dims)
+    else:
+        head_dims = [
+            getattr(model_to_check, "motor_head").out_features,
+            getattr(model_to_check, "gear_head").out_features,
+            getattr(model_to_check, "LA_head").out_features,
+            getattr(model_to_check, "RA_head").out_features,
+        ]
     report["model_head_dims"] = head_dims
     if head_dims != PHM_COMPONENT_DIMS:
         report["error"] = f"Model head dims mismatch: {head_dims} != {PHM_COMPONENT_DIMS}"
@@ -863,7 +881,7 @@ def save_model_checkpoint(model, checkpoint_path, args, accelerator=None, extra=
             "checkpoint_path": checkpoint_path,
             "experiment_metadata": experiment_metadata,
         })
-        print(f"💾 Saved trainable-only checkpoint: {checkpoint_path} | tensors={len(state)} | llm_model_keys=0")
+        print(f" Saved trainable-only checkpoint: {checkpoint_path} | tensors={len(state)} | llm_model_keys=0")
     else:
         torch.save(model_to_save.state_dict(), checkpoint_path)
 
@@ -879,11 +897,11 @@ def load_model_checkpoint(model, checkpoint_path, args, accelerator=None, map_lo
     incompatible = model_to_load.load_state_dict(state_dict, strict=False)
     missing_keys = list(getattr(incompatible, "missing_keys", []))
     unexpected_keys = list(getattr(incompatible, "unexpected_keys", []))
-    print(f"🔁 Loaded checkpoint: {checkpoint_path}")
-    print(f"   ┣━ save_trainable_only: {is_trainable_only}")
-    print(f"   ┣━ loaded_keys: {len(state_dict)}")
-    print(f"   ┣━ missing_keys: {len(missing_keys)}")
-    print(f"   ┗━ unexpected_keys: {len(unexpected_keys)}")
+    print(f" Loaded checkpoint: {checkpoint_path}")
+    print(f"  save_trainable_only: {is_trainable_only}")
+    print(f"  loaded_keys: {len(state_dict)}")
+    print(f"  missing_keys: {len(missing_keys)}")
+    print(f"  unexpected_keys: {len(unexpected_keys)}")
     if is_trainable_only:
         key_report = build_checkpoint_key_report(model_to_load, state_dict)
         if key_report["llm_model_keys"] > 0:
@@ -990,14 +1008,22 @@ def collect_classification_predictions(args, accelerator, model, loader, path):
             for key, values in metadata.items():
                 prediction_payload[key] = np.asarray(values)
         np.savez_compressed(os.path.join(path, "predictions.npz"), **prediction_payload)
-    metrics = evaluate_metrics_extended(logits, y_true, verbose=True) if getattr(args, "eval_metrics_extended", False) else {}
+    alpha_report_path = os.path.join(path, 'focal_alpha_report.json')
+    rare_indices = []
+    if os.path.exists(alpha_report_path):
+        with open(alpha_report_path) as handle:
+            rare_indices = json.load(handle).get('rare_label_indices_bottom25', [])
+    metrics = evaluate_metrics_extended(logits, y_true, verbose=True, rare_label_indices=rare_indices) if getattr(args, "eval_metrics_extended", False) else {}
     if metrics:
+        metrics.update({'evaluation_scope': 'seen_condition_test_diagnostic',
+                        'threshold_policy': 'fixed_0.5', 'rare_label_policy': 'training_split_bottom25'})
         write_json(os.path.join(path, "metrics.json"), metrics)
         if getattr(args, "save_branch_logits", False):
             write_json(os.path.join(path, "branch_metrics.json"), {
                 "final": metrics,
-                "global": evaluate_metrics_extended(global_logits, y_true, verbose=False),
-                "local": evaluate_metrics_extended(local_logits, y_true, verbose=False),
+                "global": (None if model.local_only else evaluate_metrics_extended(
+                    global_logits, y_true, verbose=False, rare_label_indices=rare_indices)),
+                "local": evaluate_metrics_extended(local_logits, y_true, verbose=False, rare_label_indices=rare_indices),
             })
     if getattr(args, "profile_inference", False):
         write_json(os.path.join(path, "latency.json"), {
@@ -1013,29 +1039,25 @@ def collect_classification_predictions(args, accelerator, model, loader, path):
     return metrics
 
 
-
-
-
 SHORT_CLASS_NAMES = [
     "M0", "M1", "M2", "M3", "M4",
     "G0", "G1", "G2", "G3", "G4", "G5", "G6", "G7", "G8",
     "LA0", "LA1", "LA2", "LA3", "LA4",
     "RA0", "RA1"
 ]
-# 设置随机种子
+
 fix_seed = args.seed
 random.seed(fix_seed)
 torch.manual_seed(fix_seed)
 np.random.seed(fix_seed)
 log.info(f"Random seed set to {fix_seed}")
 
-# 设置设备
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 log.info(f"Using device: {device}")
-accelerator=Accelerator()
+accelerator = Accelerator(cpu=device.type == 'cpu')
 
 MAX_ITERS_PER_EPOCH = args.debug_iters if getattr(args, "debug", False) else float('inf')
-
 
 
 for ii in range(args.itr):
@@ -1059,7 +1081,7 @@ for ii in range(args.itr):
         args.des, ii)
     log.info(f"Experiment setting: {setting}")
     path = os.path.join(args.checkpoints, setting + '-' + args.model_comment)
-    os.makedirs(path, exist_ok=True)  # 提前创建文件夹
+    os.makedirs(path, exist_ok=True)
     write_run_config(path, args, setting)
     log_file_path = os.path.join(path, "training_log.csv")
     with open(log_file_path, "w") as f:
@@ -1069,7 +1091,7 @@ for ii in range(args.itr):
         with open(profile_paths(args)["partial"], "w") as f:
             f.write("")
 
-    # 2. 创建列表来收集每个 step 的训练损失
+
     all_train_losses = []
     log.info("Loading datasets...")
 
@@ -1125,11 +1147,13 @@ for ii in range(args.itr):
     if args.task_name == 'classification' and args.data == 'phm':
         criterion = build_dynamic_focal_criteria(train_data, args, path)
     else:
-        criterion = DynamicFocalLoss(alpha=1.0, gamma_base=1.0, gamma_scale=2.0)
+        criterion = DynamicFocalLoss(alpha=1.0, gamma_base=1.0, gamma_scale=2.0,
+                                     logit_clip=args.loss_logit_clip)
 
     if args.local_descriptor_mode == 'revised_rms' and args.is_training:
-        if args.local_warmup_epochs != 5 and not finetune_checkpoint:
-            raise ValueError('Unified revised-local training requires five warm-up epochs')
+        expected_warmup = 0 if model.local_only else 5
+        if args.local_warmup_epochs != expected_warmup and not finetune_checkpoint:
+            raise ValueError(f'This configuration requires local_warmup_epochs={expected_warmup}')
         if args.debug or args.phm_balanced_subset_metadata:
             raise ValueError('Revised-local warm-up requires the full training partition')
         if not args.phm_split_metadata:
@@ -1144,13 +1168,15 @@ for ii in range(args.itr):
                 num_workers=args.num_workers, drop_last=False,
             )
             fit_local_descriptors(model, local_train_loader, device)
-            report = warm_up_local(
-                model, local_train_loader, local_val_loader,
-                _select_train_criterion(criterion, 'full'), device,
-                args.local_warmup_epochs, args.learning_rate,
-                os.path.join(path, 'local_warmup.pt'),
-            )
-            write_json(os.path.join(path, 'local_warmup.json'), report)
+            if not model.local_only:
+                report = warm_up_local(
+                    model, local_train_loader, local_val_loader,
+                    _select_train_criterion(criterion, 'full'), device,
+                    args.local_warmup_epochs, args.learning_rate,
+                    os.path.join(path, 'local_warmup.pt'),
+                    max_grad_norm=args.max_grad_norm,
+                )
+                write_json(os.path.join(path, 'local_warmup.json'), report)
     elif args.local_warmup_epochs:
         raise ValueError('--local_warmup_epochs requires revised_rms training')
 
@@ -1186,7 +1212,7 @@ for ii in range(args.itr):
     trained_parameters = [p for p in model.parameters() if p.requires_grad]
     model_optim = optim.Adam(trained_parameters, lr=args.learning_rate)
 
-    #选择两种学习率调整策略 1.余弦退火 2.单周期学习率
+
     if args.lradj == 'COS':
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             model_optim,
@@ -1202,9 +1228,10 @@ for ii in range(args.itr):
                                             max_lr=args.learning_rate)
 
 
-    #criterion = FocalLoss(alpha=1.0,gamma=1.7)
-    if args.use_amp:
+    if args.use_amp and device.type == 'cuda':
         scaler = torch.cuda.amp.GradScaler()
+    else:
+        scaler = None
 
     log.info("Start training...")
     train_loss_history = []
@@ -1220,7 +1247,7 @@ for ii in range(args.itr):
         epoch_start_wall = time.time()
         train_start_time = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         time_now = time.time()
-        epoch_train_losses = []  # 用于计算当前epoch的平均loss
+        epoch_train_losses = []
         batch_times = []
 
         total_samples = 0
@@ -1228,9 +1255,6 @@ for ii in range(args.itr):
         total_exact_matches = 0
         total_windows_seen = 0
 
-        progress = epoch / args.train_epochs
-        alpha = 0.8
-        beta = 0.2  # MoE 辅助但不过度主导
 
         accumulation_steps = max(1, int(getattr(args, "gradient_accumulation_steps", 1)))
         max_train_batches = min(len(train_loader), MAX_ITERS_PER_EPOCH)
@@ -1249,72 +1273,36 @@ for ii in range(args.itr):
             batch_x = batch['data'].float().to(device)
             batch_y = batch['label'].float().to(device)
 
-            if args.use_amp:
-                with torch.cuda.amp.autocast():
-                    # ===== forward =====
-                    outputs, llm_logits, moe_logits = model(batch_x)  # outputs == final_logits
+            context = torch.cuda.amp.autocast() if scaler is not None else nullcontext()
+            with context:
+                outputs, llm_logits, moe_logits = model(batch_x)
+                losses = classification_losses(
+                    outputs, llm_logits, moe_logits, batch_y, criterion,
+                    local_only=model.local_only,
+                )
+                loss = losses['total']
+            if (i + 1) % 100 == 0:
+                log.info('Losses: total=%.6f fused=%.6f global=%.6f local=%.6f',
+                         loss.item(), losses['fused'].item(), losses['global'].item(), losses['local'].item())
+            train_loss_history.append(loss.item())
+            epoch_train_losses.append(loss.item())
+            train_loss.append(loss.item())
+            group_start = (i // accumulation_steps) * accumulation_steps
+            group_size = min(accumulation_steps, max_train_batches - group_start)
+            scaled_loss = loss / group_size
+            if scaler is None:
+                scaled_loss.backward()
+            else:
+                scaler.scale(scaled_loss).backward()
+            should_step = ((i + 1) % accumulation_steps == 0) or ((i + 1) == max_train_batches)
+            if should_step:
+                optimizer_step(model_optim, trained_parameters, scaler, args.max_grad_norm)
 
-                    # ===== multi-head split =====
-                    motor_out = outputs[:, 0:5]
-                    gear_out = outputs[:, 5:14]
-                    LA_out = outputs[:, 14:19]
-                    RA_out = outputs[:, 19:21]
 
-                    motor_y = batch_y[:, 0:5]
-                    gear_y = batch_y[:, 5:14]
-                    LA_y = batch_y[:, 14:19]
-                    RA_y = batch_y[:, 19:21]
-
-                    # ===== multi-head loss (using your criterion only) =====
-                    motor_loss = _select_train_criterion(criterion, "motor")(motor_out, motor_y)
-                    gear_loss = _select_train_criterion(criterion, "gear")(gear_out, gear_y)
-                    LA_loss = _select_train_criterion(criterion, "LA")(LA_out, LA_y)
-                    RA_loss = _select_train_criterion(criterion, "RA")(RA_out, RA_y)
-
-                    weights = {"motor": 1.0, "gear": 1.0, "LA": 1.0, "RA": 0.5}
-
-                    weighted_loss = (
-                                            weights["motor"] * motor_loss +
-                                            weights["gear"] * gear_loss +
-                                            weights["LA"] * LA_loss +
-                                            weights["RA"] * RA_loss
-                                    ) / (sum(weights.values()) + 1e-12)
-
-                    # ===== LLM loss (new, using criterion) =====
-                    # llm_logits shape == [B, 21]
-                    llm_loss = _select_train_criterion(criterion, "full")(llm_logits, batch_y)
-
-                    # ===== MoE loss (new, using criterion) =====
-                    # moe_logits shape == [B, 21]
-                    moe_loss = _select_train_criterion(criterion, "full")(moe_logits, batch_y)
-
-                    # ===== Print info =====
-                    if (i + 1) % 100 == 0:
-                        print(f"🔵 LLM loss = {llm_loss.item():.6f}")
-                        print(f"🟢 MoE loss = {moe_loss.item():.6f}")
-                        print(f"⚫ Weighted loss = {weighted_loss.item():.6f}")
-
-                    # ===== Final loss =====
-                    # beta 从 0.3 开始
-                    loss = weighted_loss + alpha * llm_loss + beta * moe_loss
-                    train_loss_history.append(loss.item())
-                    epoch_train_losses.append(loss.item())
-
-                train_loss.append(loss.item())
-                scaler.scale(loss / accumulation_steps).backward()
-                should_step = ((i + 1) % accumulation_steps == 0) or ((i + 1) == max_train_batches)
-                if should_step:
-                    scaler.unscale_(model_optim)
-                    #梯度剪裁
-                    #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                    scaler.step(model_optim)
-                    scaler.update()
-
-            # === 计算多标签预测 ===
-            preds = (torch.sigmoid(outputs) > 0.5).float()  # 转为 0/1
-            correct = (preds == batch_y).float().sum()  # 全部标签中预测对的个数
+            preds = (torch.sigmoid(outputs) > 0.5).float()
+            correct = (preds == batch_y).float().sum()
             total_correct += correct.item()
-            total_samples += batch_y.numel()  # 所有标签个数（B × 20）
+            total_samples += batch_y.numel()
             total_exact_matches += (preds == batch_y).all(dim=1).float().sum().item()
             total_windows_seen += batch_y.shape[0]
 
@@ -1327,27 +1315,8 @@ for ii in range(args.itr):
                 label_wise_acc = total_correct / total_samples
                 current_emr = total_exact_matches / total_windows_seen if total_windows_seen > 0 else 0.0
 
-                print(f"\n[Batch {i + 1} @ Epoch {epoch + 1}]")
-                print(f"  ┣━ Total loss: {loss.item():.6f} | label_wise_acc: {label_wise_acc:.4f} | current_EMR: {current_emr:.4f}")
-                print(f"  ┣━ Head losses:")
-                print(f"  ┃   Motor: {motor_loss.item():.6f}")
-                print(f"  ┃   Gear : {gear_loss.item():.6f}")
-                print(f"  ┃   LA   : {LA_loss.item():.6f}")
-                print(f"  ┃   RA   : {RA_loss.item():.6f}")
-                total_head_loss = motor_loss + gear_loss + LA_loss + RA_loss
-                eps=1e-8
-                print(f"  ┣━ Contribution ratio:")
-                print(f"  ┃   Motor: {motor_loss.item() / (total_head_loss.item()+eps):.3f}")
-                print(f"  ┃   Gear : {gear_loss.item() / (total_head_loss.item()+eps):.3f}")
-                print(f"  ┃   LA   : {LA_loss.item() / (total_head_loss.item()+eps):.3f}")
-                print(f"  ┃   RA   : {RA_loss.item() / (total_head_loss.item()+eps):.3f}")
-
-                # 打印 MoE 激活率
-                if hasattr(model, "last_moe_scores") and model.last_moe_scores is not None:
-                    with torch.no_grad():
-                        probs = model.last_moe_scores.mean(dim=(0, 1))  # [E]
-                        probs_cpu = probs.cpu().numpy().tolist()
-                        print(f"  ┣━ MoE mean probs: {['%.3f' % p for p in probs_cpu]}")
+                log.info("Epoch %d batch %d: label_accuracy=%.4f EMR=%.4f",
+                         epoch + 1, i + 1, label_wise_acc, current_emr)
             sync_cuda_if_needed()
             batch_times.append(time.time() - batch_time_start)
 
@@ -1355,11 +1324,10 @@ for ii in range(args.itr):
         train_end_wall = time.time()
         train_end_time = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         train_seconds = train_end_wall - epoch_start_wall
-        print(f"🕓 Epoch {epoch + 1} finished in {time.time() - epoch_time:.2f} seconds")
+        print(f" Epoch {epoch + 1} finished in {time.time() - epoch_time:.2f} seconds")
         train_loss = np.average(train_loss)
 
 
-        # === 验证与测试 ===（注意这里的 vali/test 逻辑也要适配多标签）
         sync_cuda_if_needed()
         val_start_wall = time.time()
         vali_loss, vali_label_wise_acc = vali_classify(
@@ -1377,12 +1345,12 @@ for ii in range(args.itr):
 
 
         print(
-            f"📉 Epoch {epoch + 1} | Train Loss: {train_loss:.6f} | Vali Loss: {vali_loss:.6f} | Vali label_wise_acc: {vali_label_wise_acc:.6f}")
+            f" Epoch {epoch + 1} | Train Loss: {train_loss:.6f} | Vali Loss: {vali_loss:.6f} | Vali label_wise_acc: {vali_label_wise_acc:.6f}")
 
         with open(log_file_path, "a") as f:
             f.write(f"{epoch + 1},{train_loss},{vali_loss},{vali_label_wise_acc}\n")
         os.makedirs(path, exist_ok=True)
-        # === 保存每个 epoch 的 checkpoint ===
+
         epoch_ckpt = os.path.join(path, f"epoch_{epoch + 1}.pt")
         if getattr(args, "debug", False) and not getattr(args, "save_trainable_only", False):
             torch.save({
@@ -1394,7 +1362,7 @@ for ii in range(args.itr):
                 "model": args.model,
                 "model_id": args.model_id,
             }, epoch_ckpt)
-            print(f"💾 Saved debug checkpoint marker: {epoch_ckpt}")
+            print(f" Saved debug checkpoint marker: {epoch_ckpt}")
         else:
             save_model_checkpoint(
                 model,
@@ -1410,7 +1378,7 @@ for ii in range(args.itr):
                     "vali_label_wise_acc": float(vali_label_wise_acc),
                 },
             )
-        print(f"💾 Saved checkpoint: {epoch_ckpt}")
+        print(f" Saved checkpoint: {epoch_ckpt}")
         early_stopping(vali_loss, model, path)
 
         train_windows, train_batches_profile = effective_loader_samples(train_loader, args)
@@ -1456,14 +1424,14 @@ for ii in range(args.itr):
         append_resource_profile(args, epoch_profile)
 
         if early_stopping.early_stop:
-            print("⛔ Early stopping triggered")
+            print(" Early stopping triggered")
             plot_convergence_curves(
                 train_losses_steps=train_loss_history,
                 save_path=os.path.join(path, "training_convergence_curve.png")
             )
 
-            # ✅ 加载最佳模型进行最终 test 评估
-            print("🎯 Loading best model from checkpoint for final test evaluation...")
+
+            print(" Loading best model from checkpoint for final test evaluation...")
 
             checkpoint_path = os.path.join(path, 'checkpoint.pt')
 
@@ -1484,8 +1452,8 @@ for ii in range(args.itr):
                 args, model, test_loader, path, time.time() - test_start_wall, test_loss, test_label_wise_acc
             )
 
-            print(f"🧪 Final Test Loss: {test_loss:.6f} | Test label_wise_acc: {test_label_wise_acc:.6f}")
-            # ✅ 调用你写的 evaluate_metrics 输出详细指标
+            print(f" Final Test Loss: {test_loss:.6f} | Test label_wise_acc: {test_label_wise_acc:.6f}")
+
             evaluate_metrics(
                 preds_list=[torch.tensor(all_preds)],
                 labels_list=[torch.tensor(all_labels)],
@@ -1496,15 +1464,17 @@ for ii in range(args.itr):
                 collect_classification_predictions(args, accelerator, model, test_loader, path)
             preds_binary = (torch.sigmoid(torch.tensor(all_preds)) > 0.5).int().numpy()
 
-            # ============= 关键改动：调用新的绘图函数 =============
+
             try:
                 plot_co_occurrence_matrix(
-                    train_losses_steps=train_loss_history,
-                    vali_losses_epochs=vali_loss_history,
-                    save_path=os.path.join(path, "convergence_curves_smooth.png")
+                    y_true=all_labels,
+                    y_pred_binary=preds_binary,
+                    class_names=SHORT_CLASS_NAMES,
+                    save_path=os.path.join(path, "co_occurrence_matrix.png"),
+                    normalize=True,
                 )
             except Exception as exc:
-                print(f"⚠️ Plotting skipped after successful evaluation: {exc}")
+                print(f" Plotting skipped after successful evaluation: {exc}")
             break
 
         if args.lradj != 'TST':
@@ -1521,10 +1491,10 @@ for ii in range(args.itr):
 
 
     if not early_stopping.early_stop:
-        print("⚠️ EarlyStopping 未触发，加载最终模型进行测试评估...")
+        log.info('Training budget completed; evaluating the selected checkpoint')
 
         if getattr(args, "debug", False):
-            print("🧪 Debug mode: evaluating current in-memory model without loading checkpoint.pt")
+            print(" Debug mode: evaluating current in-memory model without loading checkpoint.pt")
             model.eval()
             sync_cuda_if_needed()
             test_start_wall = time.time()
@@ -1539,7 +1509,7 @@ for ii in range(args.itr):
             append_final_test_profile(
                 args, model, test_loader, path, time.time() - test_start_wall, test_loss, test_label_wise_acc
             )
-            print(f"🧪 Final Test Loss: {test_loss:.6f} | Test label_wise_acc: {test_label_wise_acc:.6f}")
+            print(f" Final Test Loss: {test_loss:.6f} | Test label_wise_acc: {test_label_wise_acc:.6f}")
             evaluate_metrics(
                 preds_list=[torch.tensor(all_preds)],
                 labels_list=[torch.tensor(all_labels)],
@@ -1574,7 +1544,7 @@ for ii in range(args.itr):
                 args, model, test_loader, path, time.time() - test_start_wall, test_loss, test_label_wise_acc
             )
 
-            print(f"🧪 Final Test Loss: {test_loss:.6f} | Test label_wise_acc: {test_label_wise_acc:.6f}")
+            print(f" Final Test Loss: {test_loss:.6f} | Test label_wise_acc: {test_label_wise_acc:.6f}")
             evaluate_metrics(
                 preds_list=[torch.tensor(all_preds)],
                 labels_list=[torch.tensor(all_labels)],
@@ -1585,22 +1555,20 @@ for ii in range(args.itr):
                 collect_classification_predictions(args, accelerator, model, test_loader, path)
             preds_binary = (torch.sigmoid(torch.tensor(all_preds)) > 0.5).int().numpy()
 
-            # ============= 关键改动：调用新的绘图函数 =============
+
             try:
                 plot_co_occurrence_matrix(
                     y_true=all_labels,
                     y_pred_binary=preds_binary,
-                    class_names=SHORT_CLASS_NAMES,  # 确保提供了21个类别名
+                    class_names=SHORT_CLASS_NAMES,
                     save_path=os.path.join(path, "co_occurrence_matrix.png"),
-                    normalize=True  # 推荐使用归一化，结果更具可比性
+                    normalize=True
                 )
             except Exception as exc:
-                print(f"⚠️ Plotting skipped after successful evaluation: {exc}")
+                print(f" Plotting skipped after successful evaluation: {exc}")
         else:
-            print("🚫 未找到模型 checkpoint，跳过测试集评估。")
+            log.warning('Checkpoint not found; skipping test evaluation')
 
 finalize_resource_profile(args)
-# 清理模型缓存
+
 torch.cuda.empty_cache()
-#del_files('./checkpoints')
-#print("Checkpoints cleared.")

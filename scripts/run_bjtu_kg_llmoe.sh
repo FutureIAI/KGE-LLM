@@ -11,6 +11,9 @@ CACHE_DIR="${CACHE_DIR:-./cache_data}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-./checkpoints/kg_llmoe}"
 SEED="${SEED:-2026}"
 TRAIN_EPOCHS="${TRAIN_EPOCHS:-15}"
+MAX_GRAD_NORM="${MAX_GRAD_NORM:-0}"
+LOGIT_CLIP="${LOGIT_CLIP:-0}"
+LOSS_LOGIT_CLIP="${LOSS_LOGIT_CLIP:-0}"
 
 python -u run_main.py \
   --task_name classification --is_training 1 \
@@ -26,6 +29,8 @@ python -u run_main.py \
   --patch_len 128 --stride 8 --dataset_window_stride 1024 \
   --batch_size 16 --eval_batch_size 16 --num_workers 0 \
   --learning_rate 0.0001 --train_epochs "$TRAIN_EPOCHS" --patience 3 --itr 1 \
+  --max_grad_norm "$MAX_GRAD_NORM" \
+  --logit_clip "$LOGIT_CLIP" --loss_logit_clip "$LOSS_LOGIT_CLIP" \
   --loss_type dfl_detach --dfl_gamma_base 1 --dfl_gamma_scale 2 \
   --global_backbone_mode llama --prompt_mode full --reprogramming_mode full \
   --routing_variant correct --local_descriptor_mode revised_rms \

@@ -5,6 +5,7 @@ import copy
 import torch
 from torch import nn
 from torch.nn import functional as F
+from utils.numerics import clip_logits
 
 
 def analytic_envelope_descriptor(x, topk):
@@ -46,6 +47,7 @@ class RevisedRmsMoE(nn.Module):
         self.expert_channels = [list(group) for group in routed_moe.expert_channels]
         self.label_dims = list(routed_moe.label_dims)
         self.routing_variant = "correct"
+        self.logit_clip = routed_moe.logit_clip
         self.routing_manifest_hash = ""
         for index, expert in enumerate(self.experts):
             dimension = 2 * expert.c_in + expert.hilbert.topk
@@ -105,8 +107,8 @@ class RevisedRmsMoE(nn.Module):
                 hidden = expert.pre_proj(standardized)
                 representation = expert.mlp[1](expert.mlp[0](hidden))
                 features.append(representation)
-                logits_parts.append(expert.mlp[2](representation).clamp(-20.0, 20.0))
-        logits = torch.cat(logits_parts, dim=-1).clamp(-20.0, 20.0)
+                logits_parts.append(clip_logits(expert.mlp[2](representation), self.logit_clip))
+        logits = torch.cat(logits_parts, dim=-1)
         if return_details:
             return x, logits, {
                 "component_representations": features,

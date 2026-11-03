@@ -49,7 +49,6 @@ class Model(nn.Module):
         self.patch_len = configs.patch_len
         self.stride = configs.stride
         self.configs=configs
-        self.channel_projection = nn.Linear(self.configs.d_model, 21)
         self.llm_backbone = getattr(configs, "llm_backbone", "llama")
         self.llm_model_path = getattr(configs, "llm_model_path", "")
         self.llm_repo_id = getattr(configs, "llm_repo_id", "")
@@ -84,6 +83,25 @@ class Model(nn.Module):
         if self.llm_backbone not in {"llama", "mistral"}:
             raise ValueError(f"Unknown llm_backbone={self.llm_backbone}")
 
+        self.local_only = self.global_backbone_mode == "none"
+        if self.local_only:
+            self.moe_ffn = self._build_local_branch(configs)
+            self.moe_alpha = 1.0
+            self.normalize_layers = Normalize(configs.enc_in, affine=False)
+            self.component_names = ["motor", "gear", "LA", "RA"]
+            self.component_dims = [5, 9, 5, 2]
+            self.component_slices = [(0, 5), (5, 14), (14, 19), (19, 21)]
+            self.llm_model = None
+            self.tokenizer = None
+            self.decoder_adapter = None
+            self.last_readout_report = {"readout_mode": "local_only", "readout_source": "local"}
+            self.last_branch_outputs = None
+            self.last_prompt_report = None
+            self.last_backbone_report = None
+            self.last_global_representation = None
+            return
+
+        self.channel_projection = nn.Linear(self.configs.d_model, 21)
 
 
         llama_path = self.llm_model_path or os.path.join(os.path.dirname(__file__), '..', 'LLMs', 'llama-7b')
@@ -263,7 +281,7 @@ class Model(nn.Module):
         if requested_final_norm is None:
             requested_final_norm = self.llm_backbone == "mistral"
         self.decoder_adapter = None
-        if self.llm_model is not None and self.global_backbone_mode == "llama":
+        if self.llm_model is not None and self.global_backbone_mode in {"llama", "llama_random_frozen"}:
             self.decoder_adapter = FrozenDecoderBackboneAdapter(FrozenDecoderBackboneSpec(
                 name=self.llm_backbone,
                 repo_id=self.llm_repo_id,
@@ -318,7 +336,7 @@ class Model(nn.Module):
             self.transformer_backbone = None
             self.transformer_backbone_config = None
 
-        # 这是一个identity-sized 投影，用于将特征输入LLM之前做一次线性变换完成尺度适配
+
         self.pre_llm_proj = nn.Linear(self.backbone_hidden_size, self.backbone_hidden_size)
 
         if configs.prompt_domain:
@@ -333,17 +351,7 @@ This dataset consists of multi-channel time series data collected from a tractio
                 "Industrial multichannel time-series fault diagnosis.",
             )
 
-        self.moe_ffn = LlamaMoEFeedForward(
-            routing_variant=self.routing_variant,
-            routing_manifest=self.routing_manifest,
-            expert_head_permutation=self.expert_head_permutation,
-            unified_hidden=getattr(configs, "unified_expert_hidden", None),
-        )
-        local_mode = getattr(configs, "local_descriptor_mode", "legacy")
-        if local_mode == "revised_rms":
-            self.moe_ffn = RevisedRmsMoE(self.moe_ffn)
-        elif local_mode != "legacy":
-            raise ValueError(f"Unknown local_descriptor_mode={local_mode}")
+        self.moe_ffn = self._build_local_branch(configs)
         self.moe_alpha = configs.moe_alpha
         # ---- Component-specific heads ----
         self.component_names = ["motor", "gear", "LA", "RA"]
@@ -398,6 +406,21 @@ This dataset consists of multi-channel time series data collected from a tractio
         self.last_prompt_report = None
         self.last_backbone_report = None
         self.last_global_representation = None
+
+    def _build_local_branch(self, configs):
+        branch = LlamaMoEFeedForward(
+            routing_variant=self.routing_variant,
+            routing_manifest=self.routing_manifest,
+            expert_head_permutation=self.expert_head_permutation,
+            unified_hidden=getattr(configs, "unified_expert_hidden", None),
+            logit_clip=getattr(configs, "logit_clip", 0.0),
+        )
+        local_mode = getattr(configs, "local_descriptor_mode", "legacy")
+        if local_mode == "revised_rms":
+            return RevisedRmsMoE(branch)
+        if local_mode != "legacy":
+            raise ValueError(f"Unknown local_descriptor_mode={local_mode}")
+        return branch
 
     def _build_prompt_embeddings(self, x_moe, x_enc, device):
         B = x_moe.shape[0]
@@ -563,67 +586,6 @@ This dataset consists of multi-channel time series data collected from a tractio
         else:
             raise NotImplementedError
 
-    # def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
-    #
-    #     x_enc = self.normalize_layers(x_enc, 'norm')
-    #
-    #     B, T, N = x_enc.size()
-    #     x_enc = x_enc.permute(0, 2, 1).contiguous().reshape(B * N, T, 1)
-    #
-    #     min_values = torch.min(x_enc, dim=1)[0]
-    #     max_values = torch.max(x_enc, dim=1)[0]
-    #     medians = torch.median(x_enc, dim=1).values
-    #     lags = self.calcute_lags(x_enc)
-    #     trends = x_enc.diff(dim=1).sum(dim=1)
-    #
-    #     prompt = []
-    #     for b in range(x_enc.shape[0]):
-    #         min_values_str = str(min_values[b].tolist()[0])
-    #         max_values_str = str(max_values[b].tolist()[0])
-    #         median_values_str = str(medians[b].tolist()[0])
-    #         lags_values_str = str(lags[b].tolist())
-    #         prompt_ = (
-    #             f"<|start_prompt|>Dataset description: {self.description}"
-    #             f"Task description: forecast the next {str(self.pred_len)} steps given the previous {str(self.seq_len)} steps information; "
-    #             "Input statistics: "
-    #             f"min value {min_values_str}, "
-    #             f"max value {max_values_str}, "
-    #             f"median value {median_values_str}, "
-    #             f"the trend of input is {'upward' if trends[b] > 0 else 'downward'}, "
-    #             f"top 5 lags are : {lags_values_str}<|<end_prompt>|>"
-    #         )
-    #
-    #
-    #         prompt.append(prompt_)
-    #
-    #     x_enc = x_enc.reshape(B, N, T).permute(0, 2, 1).contiguous()
-    #
-    #     prompt = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=2048).input_ids
-    #     prompt_embeddings = self.llm_model.get_input_embeddings()(prompt.to(x_enc.device))  # (batch, prompt_token, dim)
-    #
-    #     source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0)).permute(1, 0)
-    #
-    #     x_enc = x_enc.permute(0, 2, 1).contiguous()
-    #     enc_out, n_vars = self.patch_embedding(x_enc.to(torch.bfloat16))
-    #     enc_out = self.reprogramming_layer(enc_out, source_embeddings, source_embeddings)
-    #     #加入MOE
-    #     enc_out, moe_scores = self.moe_ffn(enc_out)
-    #     self.last_moe_scores = moe_scores  # for loss
-    #     llama_enc_out = torch.cat([prompt_embeddings, enc_out], dim=1)
-    #     dec_out = self.llm_model(inputs_embeds=llama_enc_out).last_hidden_state
-    #     dec_out = dec_out[:, :, :self.d_ff]
-    #
-    #     dec_out = torch.reshape(
-    #         dec_out, (-1, n_vars, dec_out.shape[-2], dec_out.shape[-1]))
-    #     dec_out = dec_out.permute(0, 1, 3, 2).contiguous()
-    #
-    #     dec_out = self.output_projection(dec_out[:, :, :, -self.patch_nums:])
-    #     dec_out = dec_out.permute(0, 2, 1).contiguous()
-    #
-    #     dec_out = self.normalize_layers(dec_out, 'denorm')
-    #
-    #     return dec_out
-
     def classify(self, x_enc, x_mark_enc=None, return_attention=None,
                  return_branch_outputs=False, intervention=None):
         # ===== Preprocess =====
@@ -644,48 +606,52 @@ This dataset consists of multi-channel time series data collected from a tractio
 
         x_moe = recon
 
+        if self.local_only:
+            global_logits = torch.zeros_like(moe_logits)
+            self.last_branch_outputs = {
+                "final_logits": moe_logits,
+                "global_logits": global_logits,
+                "local_logits": moe_logits,
+                "component_representations": (
+                    moe_details["component_representations"] if moe_details is not None else None
+                ),
+                "routing_variant": self.routing_variant,
+            }
+            if return_branch_outputs:
+                return self.last_branch_outputs
+            return moe_logits, global_logits, moe_logits
+
 
         # ===== prompts =====
         prompt_embeddings = self._build_prompt_embeddings(x_moe, x_enc, x_enc.device)
 
-        # ===== Patch embedding AFTER MoE =====
+        # Embed each channel independently before assembling global tokens.
         enc_out, n_vars = self.patch_embedding(x_moe)
 
-        # ===== Reprogramming (32→4096) =====
         enc_out = self._apply_reprogramming(enc_out)
 
-        # ===== LLM fusion =====
         C = 21
-        Lp = enc_out.shape[1]  # patch 数
-        D = enc_out.shape[2]  # patch embedding dim（来自 reprogram layer 输出）
+        Lp = enc_out.shape[1]
+        D = enc_out.shape[2]
 
-        # 原 enc_out: [B, Lp, 4096]，但实际上应该每个通道一份
-        # 你前面 reshape 回来: [B, C, Lp, D]
+
         enc_out = enc_out.view(B, C, Lp, D)
 
-        # ---------------------------------------
-        # 方案 A：将 (C × Lp) 个 token 展开
-        # 不做 pooling，保留时序结构和通道结构
-        # ---------------------------------------
-
-        # 重排维度为 token 序列： [B, C*Lp, D]
         tokens = enc_out.reshape(B, C * Lp, D)
 
-        # 投影到 LLM hidden size（4096）
-        # 你要在 __init__ 里定义 self.pre_llm_proj = nn.Linear(D, 4096)
-        tokens = self.pre_llm_proj(tokens)  # [B, C*Lp, 4096]
 
-        # 拼接 prompt token 形成最终 LLM 输入；prompt_mode=none 时只保留 patch tokens。
+        tokens = self.pre_llm_proj(tokens)  # [B, C*Lp, backbone_hidden_size]
+
+
         prompt_token_count = int(prompt_embeddings.shape[1]) if prompt_embeddings is not None else 0
         patch_token_count = int(tokens.shape[1])
         if prompt_embeddings is not None:
             llm_in = torch.cat([prompt_embeddings, tokens], dim=1)
         else:
             llm_in = tokens
-        # llm_in: [B, prompt_len + C*Lp, 4096]
 
-        # ===== 进入全局 backbone =====
-        llm_out = self._run_global_backbone(llm_in)  # (B, Total_Tokens, 4096)
+
+        llm_out = self._run_global_backbone(llm_in)
 
         z = self._select_readout(llm_out, prompt_token_count, patch_token_count)
         self.last_global_representation = z.detach()
@@ -697,7 +663,6 @@ This dataset consists of multi-channel time series data collected from a tractio
         logit_RA = self.RA_head(z)
 
         llm_logits = torch.cat([logit_motor, logit_gear, logit_LA, logit_RA], dim=-1)
-
 
 
         final_logits = self.moe_alpha * moe_logits + (1.0 - self.moe_alpha) * llm_logits
@@ -723,9 +688,6 @@ This dataset consists of multi-channel time series data collected from a tractio
         mean_value = torch.mean(corr, dim=1)
         _, lags = torch.topk(mean_value, self.top_k, dim=-1)
         return lags
-
-
-
 
 
 class ReprogrammingLayer(nn.Module):

@@ -76,9 +76,12 @@ class RevisedLocalTests(unittest.TestCase):
             llm_dim=16, patch_len=16, stride=8, d_model=8, n_heads=2,
             llm_layers=1, llm_model="LLAMA", enc_in=21, num_classes=21,
             prompt_domain=0, dropout=0.0, activation="gelu", moe_alpha=0.2,
-            global_backbone_mode="none", prompt_mode="none",
+            global_backbone_mode="transformer_trainable_lite", prompt_mode="none",
             reprogramming_mode="linear", readout_mode="mean_patch",
             local_descriptor_mode="revised_rms",
+            transformer_d_model=16, transformer_nhead=2,
+            transformer_num_layers=1, transformer_dim_feedforward=32,
+            transformer_dropout=0.0,
         )
         model = Model(config)
         input_batch = torch.randn(2, 64, 21)

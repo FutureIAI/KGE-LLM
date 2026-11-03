@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import torch
+from scipy.special import expit
 from sklearn.metrics import average_precision_score, f1_score, precision_recall_fscore_support
 from torch.utils.data import DataLoader
 
@@ -117,7 +118,7 @@ def infer(model, loader, device, use_amp, save_representations):
 
 
 def calibrate_thresholds(y_true, logits):
-    probabilities = 1.0 / (1.0 + np.exp(-np.clip(logits, -50, 50)))
+    probabilities = expit(logits)
     grid = np.arange(0.05, 0.951, 0.01)
     thresholds = []
     for label_index in range(y_true.shape[1]):
@@ -138,7 +139,7 @@ def safe_auprc(y_true, y_prob):
 
 
 def metrics(y_true, logits, thresholds, rare_indices):
-    probability = 1.0 / (1.0 + np.exp(-np.clip(logits, -50, 50)))
+    probability = expit(logits)
     prediction = (probability >= thresholds.reshape(1, -1)).astype(np.int64)
     per_label = precision_recall_fscore_support(y_true, prediction, average=None, zero_division=0)
     component = {}
@@ -219,7 +220,8 @@ def main():
     thresholds_by_branch = {}
     probability_by_branch = {}
     prediction_by_branch = {}
-    for branch in ["local", "global", "final"]:
+    evaluated_branches = ["local", "final"] if model.local_only else ["local", "global", "final"]
+    for branch in evaluated_branches:
         thresholds = calibrate_thresholds(y_val, val_branches[branch])
         branch_metrics, probability, prediction = metrics(
             y_heldout, heldout_branches[branch], thresholds, rare_indices
@@ -238,7 +240,7 @@ def main():
         prediction_by_branch[branch] = prediction
 
     prediction_payload = {"y_true": y_heldout}
-    for branch in ["local", "global", "final"]:
+    for branch in evaluated_branches:
         prediction_payload[f"{branch}_logits"] = heldout_branches[branch]
         prediction_payload[f"{branch}_probability"] = probability_by_branch[branch]
         prediction_payload[f"{branch}_prediction"] = prediction_by_branch[branch]
@@ -271,6 +273,7 @@ def main():
             "heldout_conditions": sorted(heldout_conditions),
         },
         "metrics": all_metrics,
+        "global_branch_present": not model.local_only,
     }
     write_json(output_dir / "metrics.json", report)
     write_json(output_dir / "checkpoint_key_report.json", checkpoint_audit)

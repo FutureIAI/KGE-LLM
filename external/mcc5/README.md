@@ -1,4 +1,9 @@
-# MCC5-THU Adapter
+# Legacy MCC5-THU Adapter
+
+This adapter predates the revised BJTU analytic-envelope/RMS local pathway.
+It is retained for the manifest and recording-level evaluation interfaces, not
+as a reproduction entry point for the latest MCC5 paper results. The main
+repository reproduction guide covers BJTU only.
 
 This package contains the author-maintained MCC5-THU data adapter, measurement-
 location routing layer, full KG-LLMoE model (`m0`), and compact trainable

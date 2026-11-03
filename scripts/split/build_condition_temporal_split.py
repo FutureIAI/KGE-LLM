@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Build a condition-aware temporal PHM split.
 
-This script is intentionally independent from Dataset_PHM. It reads the
-existing PHM cache/window pointers and writes only a new split protocol under
-cache_data/splits_condition_temporal_v1.
+The signal cache is built from CSV files when absent. Split indices and
+metadata are written to the requested output directory.
 """
 
 from __future__ import annotations
@@ -16,12 +15,16 @@ import math
 import os
 import re
 import subprocess
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from data_provider.phm_cache import prepare_phm_cache
 
 
 LABEL_NAMES = [
@@ -30,12 +33,6 @@ LABEL_NAMES = [
     "LA0", "LA1", "LA2", "LA3", "LA4",
     "RA0", "RA1",
 ]
-
-LEGACY_METADATA = Path(
-    "cache_data/splits_v3/"
-    "phm_split_v3_root8f1f61ff4a_seq512_wstride8_mode_file_seed2026_metadata.json"
-)
-
 
 def short_hash(text: str) -> str:
     return hashlib.sha1(str(text).encode("utf-8")).hexdigest()[:10]
@@ -298,14 +295,14 @@ def save_split_files(output_dir: Path, prefix: str, split_indices: dict) -> dict
     return split_files
 
 
-def write_reports(docs_dir: Path, metadata: dict, dry_run: bool, legacy_exists: bool) -> None:
+def write_reports(docs_dir: Path, metadata: dict, dry_run: bool) -> None:
     audit = metadata["audit"]
     lines = [
         "# Condition-Temporal Split Build Report",
         "",
         "## 1. Purpose And Scope",
         "",
-        "This utility builds a condition-aware temporal split for PHM. It does not start training, change the model structure, or overwrite the reference file-level split.",
+        "This utility builds condition-aware temporal indices for PHM CSV recordings.",
         "",
         "## 2. Condition Confirmation",
         "",
@@ -349,15 +346,9 @@ def write_reports(docs_dir: Path, metadata: dict, dry_run: bool, legacy_exists: 
         "- Conditions 7-9 are excluded from train/val/test and saved only in heldout.",
         "- Heldout must not be used for training, early stopping, threshold calibration, class weights, pos_weight, or normalization fitting.",
         "",
-        "## 7. Relation To The File-Level Split",
+        "## 7. Training",
         "",
-        f"- Existing file-level metadata exists: `{legacy_exists}`",
-        "- The file-level split remains the baseline protocol and was not overwritten.",
-        "- The condition-temporal split serves a different experimental goal: seen-condition temporal evaluation plus later held-out-condition evaluation.",
-        "",
-        "## 8. Recommendation",
-        "",
-        "- This split can be used in the next M0 full training only if the manual condition order assumption remains valid.",
+        "- Verify that Sample_1 through Sample_9 identify the intended operating conditions.",
         "- Use explicit `--phm_split_metadata` and do not enable debug, balanced subset, or legacy split flags.",
         "",
         f"Dry run only: `{dry_run}`",
@@ -373,7 +364,6 @@ def write_reports(docs_dir: Path, metadata: dict, dry_run: bool, legacy_exists: 
         "- Condition 1-6 are assigned only to train/val/test.",
         "- Condition 7-9 are assigned only to heldout.",
         "- No train/val/test temporal boundary crossing is allowed by construction.",
-        f"- Existing file-level split metadata still exists: `{legacy_exists}`.",
         "- Start training only with explicit condition-temporal metadata and after validating the condition mapping.",
     ]
     write_text(docs_dir / "condition_temporal_split_decision_note.md", "\n".join(decision) + "\n")
@@ -383,7 +373,7 @@ def write_reports(docs_dir: Path, metadata: dict, dry_run: bool, legacy_exists: 
         "",
         "## File-Level Split",
         "",
-        "- Kept as the baseline protocol.",
+        "- Separates recordings across train/validation/test.",
         "- Advantage: source-disjoint train/val/test CSVs.",
         "- Limitation: all condition IDs can be mixed across train/val/test, so it does not reserve condition shift for a separate evaluation.",
         "",
@@ -394,7 +384,7 @@ def write_reports(docs_dir: Path, metadata: dict, dry_run: bool, legacy_exists: 
         "- Advantage: separates seen-condition learning from held-out-condition validation.",
         "- Limitation: train/val/test come from different temporal segments of the same seen CSVs, so it depends on strict boundary containment, embargo, and train-only statistics.",
         "",
-        "These protocols serve different experimental goals. This report does not claim one is universally better than the other.",
+        "The generated metadata implements the condition-temporal protocol.",
     ]
     write_text(docs_dir / "file_level_vs_condition_temporal_protocol_comparison.md", "\n".join(comparison) + "\n")
 
@@ -483,6 +473,7 @@ def main() -> None:
     if condition_values != expected_conditions:
         raise RuntimeError(f"Unexpected condition coverage: {condition_values} != {expected_conditions}")
 
+    prepare_phm_cache(root, args.seq_len, args.window_stride, args.cache_dir)
     print(f"Loading cache: {cache_path}")
     cache = torch.load(cache_path, map_location="cpu", weights_only=False)
     window_pointers = cache["window_pointers"]
@@ -542,9 +533,8 @@ def main() -> None:
     if args.write:
         split_files = save_split_files(output_dir, prefix, split_indices)
 
-    metadata_path = str((output_dir / f"{prefix}_metadata.json").resolve())
+    metadata_path = str((output_dir / "metadata.json").resolve())
     audit = finalize_stats(stats)
-    legacy_exists = LEGACY_METADATA.exists()
     metadata = {
         "version": args.version,
         "split_mode": "condition_temporal",
@@ -562,7 +552,7 @@ def main() -> None:
         "num_source_files": len(source_records),
         "num_label_dirs": len({row["label_dir"] for row in source_records}),
         "condition_parse_method": args.condition_parse,
-        "condition_order_assumption": "User confirmed Sample_1..Sample_9 correspond to condition_1..condition_9.",
+        "condition_order_assumption": "Sample_1..Sample_9 correspond to condition_1..condition_9; verify against the dataset release.",
         "seen_conditions": args.seen_conditions,
         "heldout_conditions": args.heldout_conditions,
         "train_ratio": args.train_ratio,
@@ -580,7 +570,6 @@ def main() -> None:
             "condition_order_confirmed": True,
             "csv_files_per_label_dir": 9,
             "all_conditions_parsed": True,
-            "legacy_file_level_split_metadata_exists": legacy_exists,
             "heldout_usage_rule": "Heldout split must not be used for training, early stopping, threshold calibration, class weights, pos_weight, or normalization fitting.",
         },
         "dry_run": bool(args.dry_run),
@@ -588,7 +577,8 @@ def main() -> None:
     write_json(results_dir / "condition_temporal_split_metadata_preview.json", metadata)
     if args.write:
         write_json(Path(metadata_path), metadata)
-    write_reports(docs_dir, metadata, dry_run=bool(args.dry_run), legacy_exists=legacy_exists)
+        write_json(output_dir / f"{prefix}_metadata.json", metadata)
+    write_reports(docs_dir, metadata, dry_run=bool(args.dry_run))
 
     print(json.dumps({
         "dry_run": bool(args.dry_run),
@@ -597,7 +587,6 @@ def main() -> None:
         "source_counts": {k: audit[k]["source_count"] for k in ["train", "val", "test", "heldout"]},
         "label_dir_counts": {k: audit[k]["label_dir_count"] for k in ["train", "val", "test", "heldout"]},
         "condition_coverage": {k: audit[k]["condition_coverage"] for k in ["train", "val", "test", "heldout"]},
-        "legacy_metadata_exists": legacy_exists,
     }, indent=2))
 
 

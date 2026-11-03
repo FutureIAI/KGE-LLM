@@ -92,7 +92,7 @@ use the reproduction commands below as written.
 | `scripts/run_bjtu_ablation.sh` | Mechanism-control entry |
 | `scripts/evaluate_heldout.py` | Validation-calibrated held-out evaluation |
 | `scripts/verify_checkpoint_keys.py` | Trainable-only checkpoint audit |
-| `external/mcc5/` | MCC5-THU dataset and model adapters |
+| `external/mcc5/` | Legacy MCC5-THU adapter, separate from BJTU reproduction |
 
 ## Reproduction Guide
 
@@ -110,6 +110,8 @@ python -m pip install -r requirements.txt
 ```
 
 No dependency installation script downloads a dataset or pretrained model.
+The decoder adapter is tested with Transformers 4.41.2; keep the pinned version
+in `requirements.txt`. SentencePiece and Protobuf are included for LLaMA tokenizers.
 
 ### 2. Prepare external assets
 
@@ -137,6 +139,8 @@ Create the split with a dry run first. Conditions 1-6 form the development
 pool; conditions 7-9 remain held out. The 60%/15%/15% temporal allocation uses
 90% of each seen-condition source trajectory, and the terminal 10% remains
 unused. A 1,024-sample embargo removes boundary-adjacent windows.
+The signal cache is created automatically if absent; the dry run writes reports
+but does not save split indices. The final metadata entry is `metadata.json`.
 
 ```bash
 python scripts/split/build_condition_temporal_split.py \
@@ -211,6 +215,23 @@ This is a unified implementation of the revised method. Historical archived
 runs used different local warm-up sample budgets, so this script is not an
 exact replay of every previously reported checkpoint.
 
+Gradient norm clipping and logit clipping are **disabled by default**, in both
+local warm-up and joint training. To enable them explicitly:
+
+```bash
+MAX_GRAD_NORM=1 LOGIT_CLIP=20 LOSS_LOGIT_CLIP=10 \
+bash scripts/run_bjtu_kg_llmoe.sh
+```
+
+The corresponding CLI options are `--max_grad_norm`, `--logit_clip` (local
+output logits), and `--loss_logit_clip` (inputs to classification losses).
+Each defaults to `0`; positive values set symmetric logit limits or a gradient
+norm limit. The former local/loss logit limits can be recovered with `20`/`10`.
+Probability-domain epsilon bounds, descriptor bounds, and the ASL probability
+shift are separate operations and remain enabled. Probability bounds use a
+representable epsilon for the tensor dtype. All three clipping settings
+are recorded in the run configuration.
+
 ### 5. Run mechanism controls
 
 Run one variant at a time with the same split and seed:
@@ -236,8 +257,11 @@ Supported variants:
 | `M5_no_prompt` | Frozen pretrained LLaMA | None | Reprogramming |
 | `M9_linear_projection` | Frozen pretrained LLaMA | Full | Linear projection |
 
-The mechanism controls are architectural comparisons, not evidence of
-language-style reasoning or isolated causal effects.
+All variants use the analytic-envelope/RMS local descriptors and training-only
+standardization. `M1_kg_moe_only` runs five standalone local epochs, with no
+global pathway or auxiliary global loss. Other variants use five local warm-up
+epochs followed by up to fifteen joint epochs with patience three. Set
+`TRAIN_EPOCHS` and `PATIENCE` explicitly when using another training budget.
 
 ### 6. Evaluate a held-out checkpoint
 
@@ -253,8 +277,13 @@ python scripts/evaluate_heldout.py \
   --output-dir ./results/heldout/seed2026 \
   --batch-size 16 \
   --seed 2026 \
-  --variant KG-LLMoE
+  --variant KGE-LLM
 ```
+
+Training selects the checkpoint by the complete validation objective, including
+the auxiliary branch losses. Training-time seen-test diagnostics use a fixed
+0.5 threshold; use the evaluator above for validation-calibrated held-out results.
+Both reports derive rare-label membership from the training partition only.
 
 ### 7. Verify checkpoint safety
 
@@ -290,11 +319,13 @@ active block count, routing mode, prompt mode, interface mode, loss, and readout
 mode. See [`docs/REPRODUCIBILITY.md`](docs/REPRODUCIBILITY.md) for the complete
 checklist.
 
-## MCC5-THU External Validation
+## Legacy MCC5-THU Adapter
 
 The public MCC5 adapter uses recording/window manifests, train-only
 normalization metadata, measurement-location groups, and recording-level
-aggregation. Dataset files and private manifests are not redistributed. See
+aggregation. This retained adapter predates the revised BJTU local pathway and
+is not an entry point for reproducing the latest MCC5 paper results. The current
+reproduction guide covers BJTU only. Dataset files and private manifests are not redistributed. See
 [`external/mcc5/README.md`](external/mcc5/README.md) and
 [`docs/DATA_PREPARATION.md`](docs/DATA_PREPARATION.md) for the public adapter
 contract.
@@ -323,6 +354,8 @@ research module is staged. The complete boundary is documented in
 
 ## License
 
-The public KGE-LLM code is distributed under the Apache License 2.0. Datasets,
+The KGE-LLM core is distributed under the Apache License 2.0, except for the
+third-party material identified in NOTICE and individual file headers. Datasets,
 pretrained models, and third-party implementations remain subject to their own
 licenses and are not redistributed by this repository.
+See [NOTICE](NOTICE) for source attribution and the scope of the classification code.

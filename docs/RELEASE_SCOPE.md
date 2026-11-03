@@ -2,7 +2,7 @@
 
 ## Public Core
 
-The release candidate exposes the code needed to inspect and run the paper's
+The public package exposes the code needed to inspect and run the paper's
 principal architecture: component routing, local experts, global encoder
 selection, prompt/reprogramming controls, local-global prediction fusion,
 classification losses, metrics, split metadata, and safe checkpoint loading.
@@ -23,7 +23,7 @@ The following categories must remain outside the public repository:
   experiment directories;
 - third-party baseline source trees and downloaded repositories;
 - unpublished research modules that are not required to execute the disclosed
-  KG-LLMoE method.
+  KGE-LLM method.
 
 ## Third-Party Code
 

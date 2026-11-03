@@ -21,12 +21,6 @@ LABEL_NAMES = [
     "RA0", "RA1",
 ]
 
-LEGACY_METADATA = Path(
-    "cache_data/splits_v3/"
-    "phm_split_v3_root8f1f61ff4a_seq512_wstride8_mode_file_seed2026_metadata.json"
-)
-
-
 def write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=False), encoding="utf-8")
@@ -236,14 +230,6 @@ def audit(metadata_path: Path, docs_dir: Path, results_dir: Path) -> dict:
             "normal_ratio": item["normal_ratio"],
         })
 
-    legacy_exists = LEGACY_METADATA.exists()
-    legacy_files_exist = False
-    if legacy_exists:
-        legacy = json.loads(LEGACY_METADATA.read_text(encoding="utf-8"))
-        legacy_files_exist = all(Path(path).exists() for path in legacy.get("split_files", {}).values())
-    else:
-        errors.append("Reference file-level split metadata missing")
-
     result = {
         "pass": not errors,
         "errors": errors,
@@ -263,8 +249,6 @@ def audit(metadata_path: Path, docs_dir: Path, results_dir: Path) -> dict:
             "Fit scaler, class weights, pos_weight, thresholds and priors on train split only. "
             "Heldout must not influence model selection."
         ),
-        "legacy_file_level_split_metadata_exists": legacy_exists,
-        "legacy_file_level_split_files_exist": legacy_files_exist,
         "condition_order_assumption": metadata.get("condition_order_assumption"),
     }
 
@@ -283,8 +267,6 @@ def audit(metadata_path: Path, docs_dir: Path, results_dir: Path) -> dict:
         f"- condition errors: `{len(condition_errors)}`",
         f"- boundary errors: `{len(boundary_errors)}`",
         f"- embargo errors: `{len(embargo_errors)}`",
-        f"- Existing file-level metadata exists: `{legacy_exists}`",
-        f"- Existing file-level split files exist: `{legacy_files_exist}`",
         "",
         "## Split Summary",
         "",

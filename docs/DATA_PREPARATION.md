@@ -41,4 +41,4 @@ python scripts/audit/audit_condition_temporal_split.py \
 The MCC5 adapter consumes a recording/window manifest plus task and local-group
 schema JSON files. Split membership is taken from the manifest, and the adapter
 rejects normalization metadata unless it explicitly asserts train-only sources.
-Dataset files and manifests are not redistributed in this release candidate.
+Dataset files and manifests are not redistributed in this repository.

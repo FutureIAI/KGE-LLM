@@ -1,59 +1,42 @@
-# Open-Source Release Audit
+# Public Package Checks
 
-## Decision
+The repository contains the author-maintained KGE-LLM classification core,
+condition-temporal split utilities, validation-calibrated evaluation, and a
+legacy MCC5 adapter. Datasets, decoder files, trained weights and private
+experiment artifacts are excluded.
 
-This directory is a whitelist-built release candidate, not a copy of the
-research workspace. It contains the minimum author-maintained implementation
-needed to inspect and execute the disclosed KG-LLMoE architecture and its main
-mechanism controls.
+## Automated Checks
 
-## Source Selection
+Run these commands from the repository root:
 
-- The canonical BJTU model and training entry point were selected from the
-  verified LLaMA/Mistral implementation.
-- Component routing and legacy controls remain in `models/moe_ffn.py`; the
-  revised analytic-envelope/RMS local pathway is in `models/revised_local.py`.
-- The MCC5 package contains only the author-maintained dataset/schema adapters,
-  measurement-location routing, KG-LLMoE model, and compact Transformer control.
-- Condition-temporal split construction, leakage audit, and held-out evaluation
-  are included without machine-specific paths or experiment-stage names.
+```bash
+python -m pip install pytest
+python -m pytest -q
+python scripts/check_release_safety.py --root .
+shasum -a 256 -c MANIFEST.sha256
+bash -n scripts/run_bjtu_kg_llmoe.sh
+bash -n scripts/run_bjtu_ablation.sh
+```
 
-## Exclusion Audit
-
-No files were copied from dataset, pretrained-model, checkpoint, cache, log,
-result, manuscript, backup, or downloaded third-party source directories.
-Historical run queues, monitors, one-off repair scripts, raw split instances,
-and unpublished modules outside the disclosed method are also excluded.
+Tests use synthetic inputs and tiny random decoder configurations. They do not
+download pretrained weights or run dataset experiments. They cover analytic
+envelopes, RMS pooling, fixed descriptor statistics, checkpoint round trips,
+local-only separation, random-frozen decoder forward/backward, optional clipping,
+training/validation objective agreement, and empty-cache split preparation.
 
 ## Checkpoint Boundary
 
-`run_main.py` enables task-state checkpointing by default. It saves trainable
-parameters and, in revised-local mode, fixed descriptor-statistic buffers. If a model has
-registered `llm_model.*` parameters, requesting a full state-dictionary save
-raises an error. Trainable-only saves emit `checkpoint_key_report.json` and fail
-if an `llm_model.*` key is present. `scripts/verify_checkpoint_keys.py` provides
-an independent checkpoint audit before publication.
+`run_main.py` saves task-trained parameters and fixed local-descriptor buffers.
+Registered frozen decoder weights are excluded. Audit a saved checkpoint with
+`scripts/verify_checkpoint_keys.py` before sharing it.
 
-## Validation Record
+## File Boundary
 
-Validation was performed without dataset training or loading pretrained weights:
+The release scanner checks for model weights, arrays, archives, likely
+credentials, machine-specific paths, network addresses, symlinks, and blocked
+asset directories. Inspect the Git index as well: generated data, logs,
+predictions and private documents must not be staged.
 
-- release safety scan: PASS;
-- Python syntax checks for changed entry points: PASS;
-- `run_main.py --help` in the remote environment: PASS;
-- revised-local CPU tests: 4 passed, including full-model interface and
-  checkpoint round trip;
-- ignore-rule probes for LLMs, datasets, checkpoints, caches, logs, results,
-  and `.env`: all matched the intended rules.
-
-The release safety scanner enforces a 5 MiB per-file ceiling and rejects model
-weights, arrays, archives, machine-specific paths, network addresses, likely
-credentials, symlinks, and blocked asset directories.
-
-## Manual Gate Before Push
-
-1. Review `git status --short` and `MANIFEST.sha256`.
-2. Run `python scripts/check_release_safety.py --root .`.
-3. Confirm that no data, pretrained weight, trained checkpoint, result artifact,
-   internal document, or third-party code has been added.
-4. Set the intended public remote only after this review.
+`MANIFEST.sha256` covers the public files except the manifest itself. Regenerate
+it whenever tracked source, documentation or images change. Third-party source
+attribution is recorded in `NOTICE`.

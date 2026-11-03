@@ -1,10 +1,12 @@
 import hashlib
 import json
+import logging
 from pathlib import Path
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from utils.numerics import clip_logits, validate_logit_clip
 
 
 COMPONENT_NAMES = ["motor", "gear", "LA", "RA"]
@@ -19,9 +21,10 @@ PERMUTED_SOURCE_FOR_HEAD = [3, 0, 1, 2]
 
 
 # ============================================================
-#                  Hilbert Envelope Feature
+#                  Legacy Real-FFT Descriptor
 # ============================================================
 class HilbertEnvelope(nn.Module):
+    """Real-FFT reconstruction descriptor retained for checkpoint compatibility."""
     def __init__(self, topk=5):
         super().__init__()
         self.topk = topk
@@ -31,9 +34,9 @@ class HilbertEnvelope(nn.Module):
         x: [B, C, T]
         returns: [B, C + topk]
         """
-        # FFT -> analytic -> envelope
+        # This legacy real reconstruction is not a complex analytic envelope.
         fft = torch.fft.rfft(x, dim=-1)                        # [B,C,F]
-        # 防止 nan propagation
+
         fft = torch.nan_to_num(fft, nan=0.0, posinf=1e6, neginf=-1e6)
 
         analytic = torch.zeros_like(fft)
@@ -62,13 +65,13 @@ class HilbertEnvelope(nn.Module):
 
 
 # ============================================================
-#                  Wavelet Time–Frequency Feature
+#                  Legacy Temporal-Filter Features
 # ============================================================
 class WaveletTF(nn.Module):
-    """可学习 CWT 风格：捕捉冲击 + 共振（数值稳定改进）"""
+    """Unconstrained temporal filters with signed-mean pooling in legacy mode."""
     def __init__(self, c_in, scales=6, wavelet_len=32):
         super().__init__()
-        # 注意改动：初始化幅度很小，避免前向放大
+        # Small initial filter amplitudes limit the initial response scale.
         self.scales = nn.Parameter(torch.randn(scales, 1, wavelet_len) * 1e-2)
         self.proj = nn.Linear(scales, c_in)
 
@@ -86,15 +89,15 @@ class WaveletTF(nn.Module):
             # repeat for groups
             w = w.repeat(C, 1, 1)
             conv = F.conv1d(x_pad, w, groups=C)    # [B,C,T]
-            # 数值保护
+
             conv = torch.nan_to_num(conv, nan=0.0, posinf=1e6, neginf=-1e6)
             convs.append(conv.mean(dim=-1))        # [B,C]
         tf = torch.stack(convs, dim=-1)            # [B,C,scales]
         tf = torch.nan_to_num(tf, nan=0.0, posinf=1e6, neginf=-1e6)
         out = self.proj(tf)                        # [B, C, c_in]
-        # proj yields shape [B,C,c_in]; 平均尺度并防止爆炸
+
         out = out.mean(dim=-1)
-        # 最后 clamp 防止极值
+
         out = torch.clamp(out, -1e3, 1e3)
         return out
 
@@ -103,12 +106,12 @@ class WaveletTF(nn.Module):
 #                    Expert Module
 # ============================================================
 class PhysicsExpert(nn.Module):
-    def __init__(self, c_in, label_dim, hidden=128):
+    def __init__(self, c_in, label_dim, hidden=128, logit_clip=0.0):
         super().__init__()
+        self.logit_clip = validate_logit_clip(logit_clip)
         self.c_in = c_in
         self.hilbert = HilbertEnvelope(topk=5)
         self.wavelet = WaveletTF(c_in)
-        # 加一层投影与归一化，避免原特征尺度冲突
         feat_dim = c_in * 2 + 5
         self.pre_proj = nn.Sequential(
             nn.Linear(feat_dim, feat_dim),
@@ -127,10 +130,8 @@ class PhysicsExpert(nn.Module):
         """
         B, C, T = x.shape
 
-        # Safety: If input contains non-finite -> print & sanitize
         if not torch.isfinite(x).all():
-            # debug print once (可改为 logging)
-            print("⚠️ [BUG] PhysicsExpert received non-finite input; sanitizing.")
+            logging.getLogger(__name__).warning("Replacing non-finite local input values")
             x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
 
         feat_env = self.hilbert(x)         # [B, C + topk]
@@ -142,11 +143,11 @@ class PhysicsExpert(nn.Module):
         hidden = self.mlp[1](self.mlp[0](feat))
         logits = self.mlp[2](hidden) if len(self.mlp) > 2 else None
 
-        # 防止 logits 爆炸
-        if logits is not None:
-            logits = torch.clamp(logits, -20.0, 20.0)
 
-        # recon 仍返回原始信号（或可替换为增强信号）
+        if logits is not None:
+            logits = clip_logits(logits, self.logit_clip)
+
+
         recon = x
         if return_features:
             return recon, logits, hidden
@@ -158,8 +159,9 @@ class PhysicsExpert(nn.Module):
 # ============================================================
 class LlamaMoEFeedForward(nn.Module):
     def __init__(self, routing_variant="correct", routing_manifest="",
-                 expert_head_permutation="none", unified_hidden=None):
+                 expert_head_permutation="none", unified_hidden=None, logit_clip=0.0):
         super().__init__()
+        self.logit_clip = validate_logit_clip(logit_clip)
         self.routing_variant = routing_variant
         self.routing_manifest_path = str(routing_manifest or "")
         self.expert_head_permutation = expert_head_permutation
@@ -177,7 +179,8 @@ class LlamaMoEFeedForward(nn.Module):
             if unified_hidden is None:
                 unified_hidden = self.find_parameter_matched_hidden()["unified_hidden"]
             self.unified_hidden = int(unified_hidden)
-            self.unified_expert = PhysicsExpert(21, None, hidden=self.unified_hidden)
+            self.unified_expert = PhysicsExpert(21, None, hidden=self.unified_hidden,
+                                                logit_clip=self.logit_clip)
             self.unified_heads = nn.ModuleList([
                 nn.Linear(self.unified_hidden, dim) for dim in self.label_dims
             ])
@@ -187,7 +190,8 @@ class LlamaMoEFeedForward(nn.Module):
             self.unified_expert = None
             self.unified_heads = nn.ModuleList()
             self.experts = nn.ModuleList([
-                PhysicsExpert(len(self.expert_channels[i]), self.label_dims[i])
+                PhysicsExpert(len(self.expert_channels[i]), self.label_dims[i],
+                              logit_clip=self.logit_clip)
                 for i in range(len(self.expert_channels))
             ])
 
@@ -277,16 +281,9 @@ class LlamaMoEFeedForward(nn.Module):
         return recon : [B,21,T]
                logits: [B,21]
         """
-        # 1) 基础输入检查
+
         if not torch.isfinite(x).all():
-            # 打印出异常位置与统计，便于排查
-            print("⚠️ [BUG] MoE received non-finite x in forward()")
-            print("x stats:", {
-                "mean": float(torch.nanmean(x)),
-                "std": float(torch.nanstd(x)),
-                "min": float(torch.nanmin(torch.where(torch.isfinite(x), x, torch.tensor(float('inf'), device=x.device)))),
-            })
-            # 尝试 sanitize（生产可改为抛错）
+            logging.getLogger(__name__).warning("Replacing non-finite routed input values")
             x = torch.nan_to_num(x, nan=0.0, posinf=1e6, neginf=-1e6)
 
         if self.routing_variant == "unified":
@@ -322,8 +319,7 @@ class LlamaMoEFeedForward(nn.Module):
         logits_parts = [torch.nan_to_num(v, nan=0.0, posinf=1e6, neginf=-1e6) for v in logits_parts]
         recon = x
         logits = torch.cat(logits_parts, dim=1)
-        # clamp final logits as additional safety
-        logits = torch.clamp(logits, -20.0, 20.0)
+        logits = clip_logits(logits, self.logit_clip)
         if return_details:
             return recon, logits, {
                 "component_representations": features,

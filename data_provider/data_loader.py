@@ -59,7 +59,6 @@ class Dataset_ETT_hour(Dataset):
         self.timeenc = timeenc
         self.freq = freq
 
-        # self.percent = percent
         self.root_path = root_path
         self.data_path = data_path
         self.__read_data__()
@@ -71,14 +70,14 @@ class Dataset_ETT_hour(Dataset):
         self.scaler = StandardScaler()
         df_raw = pd.read_csv(os.path.join(self.root_path,
                                           self.data_path))
-        #分割训练集测试集
-        #每种类型结束的下标
+
+
         border1s = [0, 12 * 30 * 24 - self.seq_len, 12 * 30 * 24 + 4 * 30 * 24 - self.seq_len]
         border2s = [12 * 30 * 24, 12 * 30 * 24 + 4 * 30 * 24, 12 * 30 * 24 + 8 * 30 * 24]
 
         border1 = border1s[self.set_type]
         border2 = border2s[self.set_type]
-        #特征选择
+
         if self.set_type == 0:
             border2 = (border2 - self.seq_len) * self.percent // 100 + self.seq_len
 
@@ -87,18 +86,18 @@ class Dataset_ETT_hour(Dataset):
             df_data = df_raw[cols_data]
         elif self.features == 'S':
             df_data = df_raw[[self.target]]
-        # 进行train集上的归一化
+
         if self.scale:
             train_data = df_data[border1s[0]:border2s[0]]
             self.scaler.fit(train_data.values)
             data = self.scaler.transform(df_data.values)
         else:
             data = df_data.values
-        #时间戳的处理
+
         df_stamp = df_raw[['date']][border1:border2]
         df_stamp['date'] = pd.to_datetime(df_stamp.date)
         if self.timeenc == 0:
-            #如果没有编码时间戳，则需要手动处理年月日信息
+
             df_stamp['month'] = df_stamp.date.apply(lambda row: row.month, 1)
             df_stamp['day'] = df_stamp.date.apply(lambda row: row.day, 1)
             df_stamp['weekday'] = df_stamp.date.apply(lambda row: row.weekday(), 1)
@@ -107,15 +106,15 @@ class Dataset_ETT_hour(Dataset):
         elif self.timeenc == 1:
             data_stamp = time_features(pd.to_datetime(df_stamp['date'].values), freq=self.freq)
             data_stamp = data_stamp.transpose(1, 0)
-        #将最终的数据转化为xy信息
+
         self.data_x = data[border1:border2]
         self.data_y = data[border1:border2]
         self.data_stamp = data_stamp
 
-    # 滑动窗口切片机制
+
     def __getitem__(self, index):
-        feat_id = index // self.tot_len # 第几个特征
-        s_begin = index % self.tot_len # 起始时间点
+        feat_id = index // self.tot_len
+        s_begin = index % self.tot_len
 
         s_end = s_begin + self.seq_len
         r_begin = s_end - self.label_len
@@ -361,7 +360,6 @@ class Dataset_M4(Dataset):
         self.__read_data__()
 
     def __read_data__(self):
-        # M4Dataset.initialize()
         if self.flag == 'train':
             dataset = M4Dataset.load(training=True, dataset_file=self.root_path)
         else:
@@ -422,10 +420,8 @@ def _load_and_parse_single_file(sample_path):
         folder_name = sample_path.parent.name
         return sample_path, full_data, folder_name
     except Exception as e:
-        # 如果出错，返回None，由主进程处理
+
         return sample_path, None, str(e)
-
-
 
 
 class Dataset_PHM(Dataset):
@@ -452,6 +448,8 @@ class Dataset_PHM(Dataset):
         if os.path.exists(self.cache_path):
             self._log(f" loding_from_cache: {self.cache_path}")
             cache_data = torch.load(self.cache_path, weights_only=False)
+            if cache_data.get("root_path") and cache_data["root_path"] != str(Path(self.root_path).resolve()):
+                raise RuntimeError("PHM cache belongs to a different dataset root")
             self.all_file_data = cache_data["all_file_data"]
             self.window_pointers = cache_data["window_pointers"]
             self.labels = cache_data["labels"]
@@ -462,7 +460,7 @@ class Dataset_PHM(Dataset):
                 "window_pointers": self.window_pointers,
                 "labels": self.labels,
             }, self.cache_path)
-            self._log(f"💾 cachedata_saved_in: {self.cache_path}")
+            self._log(f" cachedata_saved_in: {self.cache_path}")
 
         if self.split_metadata_path:
             self.indices = self._load_v3_split(self.split_metadata_path)
@@ -476,7 +474,7 @@ class Dataset_PHM(Dataset):
             )
 
         self._validate_indices()
-        self._log(f"✅ use split={self.flag}, windows={len(self.indices)}")
+        self._log(f" use split={self.flag}, windows={len(self.indices)}")
 
     def _log(self, msg):
         if self.verbose:
@@ -565,20 +563,20 @@ class Dataset_PHM(Dataset):
             sub_comps = comp.split("+")
             for sub in sub_comps:
                 if sub.startswith("M"):
-                    idx = int(sub[1:])  # M0~M4 → index 0~4
+                    idx = int(sub[1:])  # M0-M4: indices 0-4
                     label[idx] = 1
                 elif sub.startswith("G"):
-                    idx = int(sub[1:])  # G0~G8 → index 5~13
+                    idx = int(sub[1:])  # G0-G8: indices 5-13
                     label[5 + idx] = 1
                 elif sub.startswith("LA"):
                     match = re.match(r"LA(\d+)", sub)
                     if match:
-                        idx = int(match.group(1))  # LA0~LA4 → index 14~18
+                        idx = int(match.group(1))  # LA0-LA4: indices 14-18
                         label[14 + idx] = 1
                 elif sub.startswith("RA"):
                     match = re.match(r"RA(\d+)", sub)
                     if match:
-                        idx = int(match.group(1))  # RA0~RA1 → index 19~20
+                        idx = int(match.group(1))  # RA0-RA1: indices 19-20
                         label[19 + idx] = 1
         return label
 
@@ -589,14 +587,14 @@ class Dataset_PHM(Dataset):
             assert df.shape[1] == 21, f"{sample_file_path} has wrong shape"
             return df.values.astype(np.float32)  # shape: [T, 21]
         except Exception as e:
-            raise RuntimeError(f"can't load {sample_file_path}：{e}")
+            raise RuntimeError(f"Cannot load {sample_file_path}: {e}") from e
 
     def _index_and_load_dataset(self):
 
 
         # find all files
         all_csv_files = sorted(Path(self.root_path).rglob('*.csv'))
-        self._log(f"find {len(all_csv_files)} files，loading to RAM")
+        self._log(f"Loading {len(all_csv_files)} CSV files into memory")
 
 
         results = []
@@ -625,7 +623,7 @@ class Dataset_PHM(Dataset):
 
         for sample_path, full_data, folder_name_or_error in tqdm(results, desc="Indexing windows"):
             if full_data is None:
-                self._log(f"[warming]skip {sample_path}，reason is: {folder_name_or_error}")
+                self._log(f"[WARNING] Skipping {sample_path}: {folder_name_or_error}")
                 continue
 
 

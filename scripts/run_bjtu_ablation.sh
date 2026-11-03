@@ -11,7 +11,9 @@ LLM_MODEL_PATH="${LLM_MODEL_PATH:-./LLMs/llama-7b}"
 CACHE_DIR="${CACHE_DIR:-./cache_data}"
 CHECKPOINT_ROOT="${CHECKPOINT_ROOT:-./checkpoints/ablation}"
 SEED="${SEED:-2026}"
-TRAIN_EPOCHS="${TRAIN_EPOCHS:-5}"
+MAX_GRAD_NORM="${MAX_GRAD_NORM:-0}"
+LOGIT_CLIP="${LOGIT_CLIP:-0}"
+LOSS_LOGIT_CLIP="${LOSS_LOGIT_CLIP:-0}"
 
 case "$VARIANT" in
   M0_full)                BACKBONE=llama; PROMPT=full; REPROGRAMMING=full ;;
@@ -23,6 +25,16 @@ case "$VARIANT" in
   M9_linear_projection)   BACKBONE=llama; PROMPT=full; REPROGRAMMING=linear ;;
   *) echo "Unknown VARIANT=$VARIANT" >&2; exit 2 ;;
 esac
+
+if [[ "$VARIANT" == M1_kg_moe_only ]]; then
+  TRAIN_EPOCHS="${TRAIN_EPOCHS:-5}"
+  PATIENCE="${PATIENCE:-$TRAIN_EPOCHS}"
+  WARMUP_EPOCHS=0
+else
+  TRAIN_EPOCHS="${TRAIN_EPOCHS:-15}"
+  PATIENCE="${PATIENCE:-3}"
+  WARMUP_EPOCHS=5
+fi
 
 python -u run_main.py \
   --task_name classification --is_training 1 \
@@ -39,10 +51,13 @@ python -u run_main.py \
   --transformer_d_model 512 --transformer_nhead 8 --transformer_num_layers 4 \
   --transformer_dim_feedforward 2048 --transformer_dropout 0.1 \
   --batch_size 16 --eval_batch_size 16 --num_workers 0 \
-  --learning_rate 0.0001 --train_epochs "$TRAIN_EPOCHS" --patience 2 --itr 1 \
+  --learning_rate 0.0001 --train_epochs "$TRAIN_EPOCHS" --patience "$PATIENCE" --itr 1 \
+  --max_grad_norm "$MAX_GRAD_NORM" \
+  --logit_clip "$LOGIT_CLIP" --loss_logit_clip "$LOSS_LOGIT_CLIP" \
   --loss_type dfl_detach --dfl_gamma_base 1 --dfl_gamma_scale 2 \
   --global_backbone_mode "$BACKBONE" --prompt_mode "$PROMPT" \
   --reprogramming_mode "$REPROGRAMMING" --routing_variant correct \
+  --local_descriptor_mode revised_rms --local_warmup_epochs "$WARMUP_EPOCHS" \
   --readout_mode mean_patch --moe_alpha 0.2 --lradj COS \
   --use_amp --save_trainable_only --eval_metrics_extended --save_predictions \
   --checkpoints "$CHECKPOINT_ROOT/$VARIANT" --seed "$SEED"
